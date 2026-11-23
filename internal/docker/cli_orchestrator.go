@@ -37,7 +37,7 @@ import (
 )
 
 var (
-	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)no such volume`)
+	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)(no such volume|volume (.*) not found)`)
 	networkNotFoundRegEx       = regexp.MustCompile(`(?i)network (.*) not found`)
 	containerNotFoundRegEx     = regexp.MustCompile(`(?i)no such container`)
 	networkAlreadyExistsRegEx  = regexp.MustCompile(`(?i)network with name (.*) already exists`)
@@ -61,9 +61,6 @@ var (
 	// We expect almost all Docker CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
-
-	// Checking the Docker CLI version should never need to contact the Docker daemon.
-	dockerVersionCommandTimeout = 2 * time.Second
 
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticDockerCommandTimeout = 1 * time.Minute
@@ -306,7 +303,7 @@ func (dco *DockerCliOrchestrator) ensureSupportedDockerCliVersion(ctx context.Co
 	// Use the non-JSON `docker --version` output because `docker version --format` contacts the daemon
 	// and can hang when the engine is unresponsive.
 	cmd := makeDockerCommand("--version")
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, dockerVersionCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
@@ -506,24 +503,31 @@ func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", fmt.Errorf("must specify an image to pull")
 	}
 
-	args := []string{"image", "pull", "--quiet"}
-	if options.Digest != "" {
-		args = append(args, options.Image+"@"+options.Digest)
-	} else {
-		args = append(args, options.Image)
+	args := []string{"image", "pull"}
+	if options.StdOutStream == nil && options.StdErrStream == nil {
+		args = append(args, "--quiet")
 	}
+	imageReference := options.Image
+	if options.Digest != "" {
+		imageReference += "@" + options.Digest
+	}
+	args = append(args, imageReference)
 
 	cmd := makeDockerCommand(args...)
 	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	return asId(outBuf)
+	imageID, inspectErr := containers.InspectPulledImage(ctx, dco, imageReference)
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
+	}
+	return imageID, nil
 }
 
 func (dco *DockerCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
@@ -746,8 +750,9 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
 
-	exitCh := make(chan int32)
+	exitCh := make(chan int32, 1)
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
@@ -1527,6 +1532,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 		}
 	}
 
+	ic.Entrypoint, ic.Command = dci.Config.Entrypoint, dci.Config.Cmd
 	ic.Args = append(ic.Args, dci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, dci.Config.Cmd...)
 

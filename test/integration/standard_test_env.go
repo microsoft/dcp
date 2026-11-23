@@ -15,7 +15,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
+	clientgorest "k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
@@ -23,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -30,6 +33,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -43,6 +47,7 @@ type TestEnvironmentInfo struct {
 	ContainerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
 	StateStore                       *statestore.Store
 	ResourceLeaseOwner               process.ProcessHandle
+	OutputCleanupQueue               *resiliency.WorkQueue
 	Log                              logr.Logger
 	SessionFolder                    string
 	afterShutdownLock                sync.Mutex
@@ -50,8 +55,16 @@ type TestEnvironmentInfo struct {
 }
 
 type TestEnvironmentOptions struct {
-	WorkloadID                    commonapi.WorkloadID
-	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
+	ConfigureTunnelProxy            func(*controllers.ContainerNetworkTunnelProxyReconcilerConfig)
+	DecorateTunnelProxyClient       func(ctrl_client.Client) ctrl_client.Client
+	DecorateTunnelProxyAPIReader    func(ctrl_client.Reader) ctrl_client.Reader
+	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
+	DecorateLogger                  func(logr.Logger) logr.Logger
+	WorkloadID                      commonapi.WorkloadID
+	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
+	CreateLogicalServiceProxy       proxy.ProxyFactory
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -123,8 +136,12 @@ func StartTestEnvironmentWithOptions(
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
 	}
 
-	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
-	ctrl.SetLogger(log)
+	baseLog := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
+	ctrl.SetLogger(baseLog)
+	log := baseLog
+	if options.DecorateLogger != nil {
+		log = options.DecorateLogger(log)
+	}
 
 	startedServerInfo, serverStartErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log, sessionFolder)
 	serverInfo = startedServerInfo
@@ -183,6 +200,8 @@ func StartTestEnvironmentWithOptions(
 		// This avoids a bunch of shutdown errors from the manager.
 		<-managerDone.Wait()
 
+		// Test resources are released before the API server disposal completes, so a completed
+		// shutdown guarantees that they are released, but never while the manager is still running.
 		tpeCloseErr := pex.Close()
 		if tpeCloseErr != nil {
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
@@ -193,6 +212,19 @@ func StartTestEnvironmentWithOptions(
 	})
 
 	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
+	if options.DecorateAPIClient != nil {
+		opts.NewClient = func(config *clientgorest.Config, clientOptions ctrl_client.Options) (ctrl_client.Client, error) {
+			apiClient, clientErr := ctrl_client.New(config, clientOptions)
+			if clientErr != nil {
+				return nil, clientErr
+			}
+			decoratedClient := options.DecorateAPIClient(apiClient)
+			if decoratedClient == nil {
+				return nil, fmt.Errorf("API client decorator returned nil")
+			}
+			return decoratedClient, nil
+		}
+	}
 	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
@@ -252,11 +284,13 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
-	if inclCtrl&NetworkController != 0 {
+	harvester := controllers.NewResourceHarvester()
+	if inclCtrl&(NetworkController|LogicalContainerNetworkController) != 0 {
 		// Run the harvester in a separate goroutine to ensure that it does not block controller startup
-		harvester := controllers.NewResourceHarvester()
 		go harvester.MockHarvest(ctx, 2*time.Second, log.WithName("ResourceCleanup"))
+	}
 
+	if inclCtrl&NetworkController != 0 {
 		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
@@ -297,6 +331,56 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
+	controllerAPIReader := mgr.GetAPIReader()
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
+		controllerAPIReader = options.DecorateAPIReader(controllerAPIReader)
+		if controllerAPIReader == nil {
+			return nil, nil, fmt.Errorf("api reader decorator returned nil")
+		}
+	}
+	if inclCtrl&LogicalContainerController != 0 {
+		logicalContainerR := controllers.NewLogicalContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			controllerAPIReader,
+			log.WithName("LogicalContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
+		}
+	}
+
+	if inclCtrl&LogicalContainerNetworkController != 0 {
+		logicalNetworkR := controllers.NewLogicalContainerNetworkReconciler(
+			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerNetworkReconciler"),
+			serverInfo.ContainerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkR.SetupWithManager(mgr, instanceTag+"-LogicalContainerNetworkReconciler"); logicalNetworkSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerNetwork reconciler: %w", logicalNetworkSetupErr)
+		}
+	}
+
+	if inclCtrl&LogicalProcessController != 0 {
+		logicalProcessR := controllers.NewLogicalProcessReconciler(
+			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalProcessReconciler"), pex,
+			outputCleanupQueue,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
+		}
+	}
+
 	if inclCtrl&PhysicalContainerImageController != 0 {
 		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
 			ctx,
@@ -304,6 +388,8 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerImage reconciler: %w", err)
@@ -314,7 +400,7 @@ func StartTestEnvironmentWithOptions(
 		physicalContainerR := controllers.NewPhysicalContainerReconciler(
 			ctx,
 			mgr.GetClient(),
-			mgr.GetAPIReader(),
+			controllerAPIReader,
 			log.WithName("PhysicalContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
 			pex,
@@ -351,15 +437,38 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	if inclCtrl&PhysicalProcessController != 0 {
+		var physicalExecutor process.Executor = pex
+		if options.DecoratePhysicalProcessExecutor != nil {
+			physicalExecutor = options.DecoratePhysicalProcessExecutor(physicalExecutor)
+		}
 		physicalProcessR := controllers.NewPhysicalProcessReconciler(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
-			pex,
+			physicalExecutor,
+			outputCleanupQueue,
 		)
 		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerExecController != 0 {
+		physicalExecR := controllers.NewPhysicalContainerExecReconciler(
+			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("PhysicalContainerExecReconciler"), serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
+		)
+		if physicalExecSetupErr := physicalExecR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerExecReconciler"); physicalExecSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerExec reconciler: %w", physicalExecSetupErr)
+		}
+	}
+	if inclCtrl&LogicalContainerExecController != 0 {
+		logicalExecR := controllers.NewLogicalContainerExecReconciler(
+			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerExecReconciler"),
+		)
+		if logicalExecSetupErr := logicalExecR.SetupWithManager(mgr, instanceTag+"-LogicalContainerExecReconciler"); logicalExecSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerExec reconciler: %w", logicalExecSetupErr)
 		}
 	}
 
@@ -394,6 +503,16 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&LogicalServiceController != 0 {
+		createServiceProxy := options.CreateLogicalServiceProxy
+		if createServiceProxy == nil {
+			createServiceProxy = ctrl_testutil.NewTestProxy
+		}
+		logicalServiceR := controllers.NewLogicalServiceReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), createServiceProxy)
+		if setupErr := logicalServiceR.SetupWithManager(mgr, instanceTag+"-LogicalServiceReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalService reconciler: %w", setupErr)
+		}
+	}
 	if inclCtrl&ServiceController != 0 {
 		serviceR := controllers.NewServiceReconciler(
 			ctx,
@@ -414,18 +533,37 @@ func StartTestEnvironmentWithOptions(
 	var tcc *ctrl_testutil.TestTunnelControlClient
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		tunnelProxyClient := mgr.GetClient()
+		if options.DecorateTunnelProxyClient != nil {
+			tunnelProxyClient = options.DecorateTunnelProxyClient(tunnelProxyClient)
+			if tunnelProxyClient == nil {
+				return nil, nil, fmt.Errorf("tunnel proxy API client decorator returned nil")
+			}
+		}
 		tcc = ctrl_testutil.NewTestTunnelControlClient()
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pex,
 			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
 			MaxTunnelPreparationAttempts: 2,
+			// Keeps the shutdown drain well within the time shutdownTestEnvironment waits for test environment shutdown.
+			WorkQueueDrainTimeout: 5 * time.Second,
+		}
+		if options.ConfigureTunnelProxy != nil {
+			options.ConfigureTunnelProxy(&tprOpts)
+		}
+		tunnelProxyAPIReader := mgr.GetAPIReader()
+		if options.DecorateTunnelProxyAPIReader != nil {
+			tunnelProxyAPIReader = options.DecorateTunnelProxyAPIReader(tunnelProxyAPIReader)
+			if tunnelProxyAPIReader == nil {
+				return nil, nil, fmt.Errorf("tunnel proxy API reader decorator returned nil")
+			}
 		}
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
+			tunnelProxyClient,
+			tunnelProxyAPIReader,
 			tprOpts,
 			log.WithName("TunnelProxyReconciler"),
 		)
@@ -441,8 +579,10 @@ func StartTestEnvironmentWithOptions(
 	// Starts the controller manager and all the associated controllers
 	managerDone.Clear()
 	go func() {
-		_ = mgr.Start(ctx)
-		managerDone.Set()
+		defer managerDone.Set()
+		if managerRunErr := controllers.StartControllerManager(ctx, mgr); managerRunErr != nil {
+			log.Error(managerRunErr, "Controller manager failed")
+		}
 	}()
 
 	testEnvironmentInfo = &TestEnvironmentInfo{
@@ -454,6 +594,7 @@ func StartTestEnvironmentWithOptions(
 		ContainerAttachFactoryDispatcher: containerAttachDispatcher,
 		StateStore:                       stateStore,
 		ResourceLeaseOwner:               leaseOwner,
+		OutputCleanupQueue:               outputCleanupQueue,
 		Log:                              log,
 		SessionFolder:                    sessionFolder,
 	}

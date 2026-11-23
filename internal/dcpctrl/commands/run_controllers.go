@@ -207,6 +207,11 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.Error(err, "Unable to set up Service controller")
 			return err
 		}
+		logicalServiceCtrl := controllers.NewLogicalServiceReconciler(ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), nil)
+		if logicalServiceSetupErr := logicalServiceCtrl.SetupWithManager(mgr, defaultControllerName); logicalServiceSetupErr != nil {
+			log.Error(logicalServiceSetupErr, "Unable to set up LogicalService controller")
+			return logicalServiceSetupErr
+		}
 
 		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
 			log.Error(err, "Unable to set up Endpoint owner index")
@@ -262,12 +267,54 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		logicalContainerCtrl := controllers.NewLogicalContainerReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("LogicalContainerReconciler"),
+			containerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerCtrl.SetupWithManager(mgr, defaultControllerName); logicalContainerSetupErr != nil {
+			log.Error(logicalContainerSetupErr, "Unable to set up LogicalContainer controller")
+			return logicalContainerSetupErr
+		}
+
+		logicalNetworkCtrl := controllers.NewLogicalContainerNetworkReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerNetworkReconciler"),
+			containerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkCtrl.SetupWithManager(mgr, defaultControllerName); logicalNetworkSetupErr != nil {
+			log.Error(logicalNetworkSetupErr, "Unable to set up LogicalContainerNetwork controller")
+			return logicalNetworkSetupErr
+		}
+
+		outputCleanupQueue := resiliency.NewWorkQueue(ctrlCtx, controllers.MaxConcurrentReconciles)
+		logicalProcessCtrl := controllers.NewLogicalProcessReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), processExecutor,
+			outputCleanupQueue,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); logicalProcessSetupErr != nil {
+			log.Error(logicalProcessSetupErr, "Unable to set up LogicalProcess controller")
+			return logicalProcessSetupErr
+		}
+
 		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			containerOrchestrator,
+			outputCleanupQueue,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalContainerImage controller")
@@ -317,10 +364,27 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
 			processExecutor,
+			outputCleanupQueue,
 		)
 		if err = physicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalProcess controller")
 			return err
+		}
+
+		physicalExecCtrl := controllers.NewPhysicalContainerExecReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), containerOrchestrator,
+			outputCleanupQueue,
+		)
+		if physicalExecSetupErr := physicalExecCtrl.SetupWithManager(mgr, defaultControllerName); physicalExecSetupErr != nil {
+			log.Error(physicalExecSetupErr, "Unable to set up PhysicalContainerExec controller")
+			return physicalExecSetupErr
+		}
+		logicalExecCtrl := controllers.NewLogicalContainerExecReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerExecReconciler"),
+		)
+		if logicalExecSetupErr := logicalExecCtrl.SetupWithManager(mgr, defaultControllerName); logicalExecSetupErr != nil {
+			log.Error(logicalExecSetupErr, "Unable to set up LogicalContainerExec controller")
+			return logicalExecSetupErr
 		}
 
 		containerExecCtrl := controllers.NewContainerExecReconciler(
@@ -409,7 +473,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				close(mgrRunResultCh)
 			}()
 
-			mgrRunErr = mgr.Start(ctrlCtx)
+			mgrRunErr = controllers.StartControllerManager(ctrlCtx, mgr)
 		}()
 
 		<-ctrlCtx.Done()

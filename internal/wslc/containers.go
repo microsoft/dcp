@@ -407,6 +407,15 @@ func (wco *WslcCliOrchestrator) inspectContainersRaw(
 	)
 
 	rawContainers, decodeErr := decodeJSONArray[wslcInspectedContainer](outBuf)
+	for _, rawContainer := range rawContainers {
+		if strings.TrimSpace(rawContainer.ID) == "" || strings.TrimPrefix(strings.TrimSpace(rawContainer.Name), "/") == "" {
+			decodeErr = errors.Join(decodeErr, containers.ErrUnmarshalling,
+				fmt.Errorf("inspected WSLC container did not contain both an ID and name"))
+		}
+	}
+	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && len(rawContainers) < len(containerReferences) {
+		return rawContainers, errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	}
 	if runErr != nil {
 		runErr = errors.Join(
 			runErr,
@@ -459,6 +468,7 @@ func convertInspectedContainer(
 		}
 	}
 
+	inspectedContainer.Entrypoint, inspectedContainer.Command = rawContainer.Config.Entrypoint, rawContainer.Config.Cmd
 	inspectedContainer.Args = append(inspectedContainer.Args, rawContainer.Config.Entrypoint...)
 	inspectedContainer.Args = append(inspectedContainer.Args, rawContainer.Config.Cmd...)
 
@@ -656,6 +666,7 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	cmd := makeWslcCommand(args...)
 	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
 	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
+	cmd.WaitDelay = 2 * time.Second
 	exitCodes := make(chan int32, 1)
 	exitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, exitErr error) {
 		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {

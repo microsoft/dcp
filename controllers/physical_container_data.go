@@ -6,7 +6,7 @@
 package controllers
 
 import (
-	std_slices "slices"
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,29 +20,140 @@ type physicalContainerDataStateKey string
 
 type physicalContainerState int
 
-const (
-	physicalContainerStateNamespace physicalContainerState = iota + 1
-	physicalContainerStateResolve
-	physicalContainerStateImage
-	physicalContainerStateVolumes
-	physicalContainerStateNetworks
-	physicalContainerStateCreate
-	physicalContainerStateReplace
-	physicalContainerStateCopyFiles
-	physicalContainerStateStart
-	physicalContainerStateCleanup
-	physicalContainerStateRuntime
-	physicalContainerStateStop
-	physicalContainerStateRemove
-	physicalContainerStateInvalid
-)
+func physicalContainerRuntimeState(status containers.ContainerStatus) physicalContainerState {
+	switch status {
+	case containers.ContainerStatusRunning:
+		return physicalContainerStateRunning
+	case containers.ContainerStatusPaused:
+		return physicalContainerStatePaused
+	case containers.ContainerStatusRestarting:
+		return physicalContainerStateRestarting
+	case containers.ContainerStatusCreated:
+		return physicalContainerStateNotStarted
+	case containers.ContainerStatusRemoving:
+		return physicalContainerStateRemoving
+	case containers.ContainerStatusExited:
+		return physicalContainerStateExited
+	case containers.ContainerStatusDead:
+		return physicalContainerStateDead
+	default:
+		return physicalContainerStateUnknown
+	}
+}
 
 const (
-	physicalContainerOperationInProgress   = physicalResourceProgressInProgress
-	physicalContainerOperationCompleted    = physicalResourceProgressCompleted
-	physicalContainerOperationRetryPending = physicalResourceProgressRetryPending
-	physicalContainerOperationFailed       = physicalResourceProgressFailed
+	physicalContainerStateCleanupFailed physicalContainerState = iota + 1
+	physicalContainerStateCleanupRetry
+	physicalContainerStateCopyFiles
+	physicalContainerStateCreate
+	physicalContainerStateCreateFailed
+	physicalContainerStateCreateRetry
+	physicalContainerStateCreated
+	physicalContainerStateCreationSkipped
+	physicalContainerStateDead
+	physicalContainerStateDependencies
+	physicalContainerStateDependencyFailed
+	physicalContainerStateDependencyLookupFailed
+	physicalContainerStateExited
+	physicalContainerStateFileCopyFailed
+	physicalContainerStateFilesCopied
+	physicalContainerStateInspectFailed
+	physicalContainerStateInvalid
+	physicalContainerStateMissing
+	physicalContainerStateNotStarted
+	physicalContainerStatePaused
+	physicalContainerStateRemoveRetry
+	physicalContainerStateRemoving
+	physicalContainerStateReplaceRetry
+	physicalContainerStateResolve
+	physicalContainerStateResolveRetry
+	physicalContainerStateRestarting
+	physicalContainerStateRunning
+	physicalContainerStateStart
+	physicalContainerStateStartFailed
+	physicalContainerStateStarted
+	physicalContainerStateStopRetry
+	physicalContainerStateStopped
+	physicalContainerStateStopping
+	physicalContainerStateUnknown
 )
+
+func (state physicalContainerState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerStateCleanupFailed:
+		return "CleanupFailed"
+	case physicalContainerStateCleanupRetry:
+		return "CleanupRetry"
+	case physicalContainerStateCopyFiles:
+		return "CopyFiles"
+	case physicalContainerStateCreate:
+		return "Create"
+	case physicalContainerStateCreateFailed:
+		return "CreateFailed"
+	case physicalContainerStateCreateRetry:
+		return "CreateRetry"
+	case physicalContainerStateCreated:
+		return "Created"
+	case physicalContainerStateCreationSkipped:
+		return "CreationSkipped"
+	case physicalContainerStateDead:
+		return "Dead"
+	case physicalContainerStateDependencies:
+		return "Dependencies"
+	case physicalContainerStateDependencyFailed:
+		return "DependencyFailed"
+	case physicalContainerStateDependencyLookupFailed:
+		return "DependencyLookupFailed"
+	case physicalContainerStateExited:
+		return "Exited"
+	case physicalContainerStateFileCopyFailed:
+		return "FileCopyFailed"
+	case physicalContainerStateFilesCopied:
+		return "FilesCopied"
+	case physicalContainerStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerStateInvalid:
+		return "Invalid"
+	case physicalContainerStateMissing:
+		return "Missing"
+	case physicalContainerStateNotStarted:
+		return "NotStarted"
+	case physicalContainerStatePaused:
+		return "Paused"
+	case physicalContainerStateRemoveRetry:
+		return "RemoveRetry"
+	case physicalContainerStateRemoving:
+		return "Removing"
+	case physicalContainerStateReplaceRetry:
+		return "ReplaceRetry"
+	case physicalContainerStateResolve:
+		return "Resolve"
+	case physicalContainerStateResolveRetry:
+		return "ResolveRetry"
+	case physicalContainerStateRestarting:
+		return "Restarting"
+	case physicalContainerStateRunning:
+		return "Running"
+	case physicalContainerStateStart:
+		return "Start"
+	case physicalContainerStateStartFailed:
+		return "StartFailed"
+	case physicalContainerStateStarted:
+		return "Started"
+	case physicalContainerStateStopRetry:
+		return "StopRetry"
+	case physicalContainerStateStopped:
+		return "Stopped"
+	case physicalContainerStateStopping:
+		return "Stopping"
+	case physicalContainerStateUnknown:
+		return "Unknown"
+	default:
+		return fmt.Sprintf("physicalContainerState(%d)", int(state))
+	}
+}
 
 type physicalContainerData struct {
 	// UID of the PhysicalContainer that owns this data.
@@ -51,20 +162,14 @@ type physicalContainerData struct {
 	// Current reconciliation concern.
 	state physicalContainerState
 
-	// Progress of the current runtime operation.
-	progress physicalResourceProgress
+	// Whether the current asynchronous operation is still outstanding.
+	workInProgress bool
 
 	// ID of the associated runtime container, including a partially created container.
 	containerID string
 
 	// Image name resolved from the referenced PhysicalContainerImage.
 	image string
-
-	// Runtime volume mounts resolved from the referenced PhysicalContainerVolumes.
-	volumeMounts []containers.CreateContainerVolumeMount
-
-	// Runtime networks resolved from the referenced PhysicalContainerNetworks.
-	networks []containers.CreateContainerNetworkOptions
 
 	// Diagnostic message from the current failed runtime operation.
 	failureMessage string
@@ -79,53 +184,13 @@ type physicalContainerData struct {
 	retryAfter time.Time
 }
 
-func clonePhysicalContainerNetworks(networks []containers.CreateContainerNetworkOptions) []containers.CreateContainerNetworkOptions {
-	if networks == nil {
-		return nil
-	}
-
-	clonedNetworks := make([]containers.CreateContainerNetworkOptions, len(networks))
-	for i := range networks {
-		clonedNetworks[i] = networks[i]
-		clonedNetworks[i].Aliases = append([]string{}, networks[i].Aliases...)
-	}
-	return clonedNetworks
-}
-
-func physicalContainerNetworksEqual(left, right []containers.CreateContainerNetworkOptions) bool {
-	if len(left) != len(right) {
-		return false
-	}
-
-	for i := range left {
-		if left[i].Name != right[i].Name || !stringSlicesEqual(left[i].Aliases, right[i].Aliases) {
-			return false
-		}
-	}
-	return true
-}
-
-func stringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func (data *physicalContainerData) Clone() *physicalContainerData {
 	return &physicalContainerData{
 		resourceUID:               data.resourceUID,
 		state:                     data.state,
-		progress:                  data.progress,
+		workInProgress:            data.workInProgress,
 		containerID:               data.containerID,
 		image:                     data.image,
-		volumeMounts:              append([]containers.CreateContainerVolumeMount{}, data.volumeMounts...),
-		networks:                  clonePhysicalContainerNetworks(data.networks),
 		failureMessage:            data.failureMessage,
 		portMappingFailureMessage: data.portMappingFailureMessage,
 		cleanupMessage:            data.cleanupMessage,
@@ -143,8 +208,8 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 		data.state = other.state
 		updated = true
 	}
-	if data.progress != other.progress {
-		data.progress = other.progress
+	if data.workInProgress != other.workInProgress {
+		data.workInProgress = other.workInProgress
 		updated = true
 	}
 	if data.containerID != other.containerID {
@@ -153,14 +218,6 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	}
 	if data.image != other.image {
 		data.image = other.image
-		updated = true
-	}
-	if !std_slices.Equal(data.volumeMounts, other.volumeMounts) {
-		data.volumeMounts = append([]containers.CreateContainerVolumeMount{}, other.volumeMounts...)
-		updated = true
-	}
-	if !physicalContainerNetworksEqual(data.networks, other.networks) {
-		data.networks = clonePhysicalContainerNetworks(other.networks)
 		updated = true
 	}
 	if data.failureMessage != other.failureMessage {
@@ -184,30 +241,32 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 }
 
 func (data *physicalContainerData) operationInProgress() bool {
-	return data.progress == physicalContainerOperationInProgress
+	return data != nil && data.workInProgress
 }
 
 func (data *physicalContainerData) applyTo(
 	container *apiv2.PhysicalContainer,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
-	change := noChange
+	change := setValue(&container.Status.ContainerID, data.containerID)
 	if data.containerID != "" {
-		change |= setValue(&container.Status.ContainerID, data.containerID)
+		if container.Spec.Container != nil {
+			change |= setValue(&container.Status.ContainerName, container.Spec.Container.ContainerName)
+		}
 	}
 	if data.image != "" {
 		change |= setValue(&container.Status.Image, data.image)
 	}
 
 	message := data.failureMessage
-	if data.state == physicalContainerStateCleanup || data.cleanupMessage != "" {
+	if data.state == physicalContainerStateCleanupFailed || data.state == physicalContainerStateCleanupRetry || data.cleanupMessage != "" {
 		message = data.cleanupMessage
 	}
 	if data.portMappingFailureMessage != "" {
-		projection, valid := physicalContainerProjections.project(data.state, data.progress)
+		projection, valid := physicalContainerProjections.project(data.state)
 		if !valid {
 			stateChange, delay, _ := physicalContainerProjections.apply(
 				data.state,
-				data.progress,
+
 				message,
 				&container.Status.Phase,
 				&container.Status.Conditions,
@@ -231,7 +290,7 @@ func (data *physicalContainerData) applyTo(
 
 	stateChange, delay, valid := physicalContainerProjections.apply(
 		data.state,
-		data.progress,
+
 		message,
 		&container.Status.Phase,
 		&container.Status.Conditions,
@@ -242,155 +301,137 @@ func (data *physicalContainerData) applyTo(
 
 var physicalContainerProjections = physicalResourceProjectionTable[physicalContainerState, apiv2.PhysicalContainerPhase]{
 	invalidPhase: apiv2.PhysicalContainerPhaseUnknown,
-	projections: map[physicalResourceProjectionKey[physicalContainerState]]physicalResourceProjection[apiv2.PhysicalContainerPhase]{
-		{state: physicalContainerStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
+	projections: map[physicalContainerState]physicalResourceProjection[apiv2.PhysicalContainerPhase]{
+		physicalContainerStateResolve: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerReasonResolvingRuntimeContainer, message: "Resolving the runtime container identity.",
+			requeue: true,
 		},
-		{state: physicalContainerStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
+		physicalContainerStateDependencies: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependenciesNotReady,
 		},
-		{state: physicalContainerStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: physicalContainerStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: physicalContainerStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
+		physicalContainerStateDependencyLookupFailed: {
+			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependencyLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateImage, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageNotFound,
+		physicalContainerStateDependencyFailed: {
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependencyFailed,
 		},
-		{state: physicalContainerStateImage, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageNotReady,
-		},
-		{state: physicalContainerStateImage, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageLookupFailed,
-			requeue: true, requeueDelay: LongDelay,
-		},
-		{state: physicalContainerStateVolumes, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotFound,
-		},
-		{state: physicalContainerStateVolumes, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotReady,
-		},
-		{state: physicalContainerStateVolumes, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeLookupFailed,
-			requeue: true, requeueDelay: LongDelay,
-		},
-		{state: physicalContainerStateNetworks, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotFound,
-		},
-		{state: physicalContainerStateNetworks, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotReady,
-		},
-		{state: physicalContainerStateNetworks, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkLookupFailed,
-			requeue: true, requeueDelay: LongDelay,
-		},
-		{state: physicalContainerStateCreate, progress: physicalResourceProgressInProgress}: {
+		physicalContainerStateCreate: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreating,
 			message: "Physical container creation is in progress.",
 		},
-		{state: physicalContainerStateCreate, progress: physicalResourceProgressCompleted}: {
+		physicalContainerStateCreated: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreated,
 			message: "Physical container creation completed.",
 		},
-		{state: physicalContainerStateCreate, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateCreationSkipped: {
+			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStopRequested,
+			message: "Runtime container was not created because stop was requested.",
+		},
+		physicalContainerStateCreateRetry: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreateFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateCreate, progress: physicalResourceProgressFailed}: {
+		physicalContainerStateCreateFailed: {
 			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreateFailed,
 		},
-		{state: physicalContainerStateReplace, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateReplaceRetry: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonExistingContainerReplacementFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateCopyFiles, progress: physicalResourceProgressInProgress}: {
+		physicalContainerStateCopyFiles: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCopyingFiles,
 			message: "Physical container file copy is in progress.",
 		},
-		{state: physicalContainerStateCopyFiles, progress: physicalResourceProgressCompleted}: {
+		physicalContainerStateFilesCopied: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonFilesCreated,
 			message: "Physical container file copy completed.",
 		},
-		{state: physicalContainerStateCopyFiles, progress: physicalResourceProgressFailed}: {
+		physicalContainerStateFileCopyFailed: {
 			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonFileCopyFailed,
 		},
-		{state: physicalContainerStateStart, progress: physicalResourceProgressInProgress}: {
+		physicalContainerStateStart: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStarting,
 			message: "Physical container start is in progress.",
 		},
-		{state: physicalContainerStateStart, progress: physicalResourceProgressCompleted}: {
+		physicalContainerStateStarted: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStarted,
 			message: "Physical container start completed.",
 		},
-		{state: physicalContainerStateStart, progress: physicalResourceProgressFailed}: {
+		physicalContainerStateStartFailed: {
 			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStartFailed,
 		},
-		{state: physicalContainerStateCleanup, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateCleanupRetry: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonPartialContainerCleanupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateCleanup, progress: physicalResourceProgressFailed}: {
+		physicalContainerStateCleanupFailed: {
 			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonPartialContainerCleanupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressRunning}: {
+		physicalContainerStateRunning: {
 			phase: apiv2.PhysicalContainerPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerRunning,
 			message: "Runtime container is running.", requeue: true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressPaused}: {
+		physicalContainerStatePaused: {
 			phase: apiv2.PhysicalContainerPhasePaused, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerPaused,
 			message: "Runtime container is paused.", requeue: true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressRestarting}: {
+		physicalContainerStateRestarting: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerRestarting,
 			message: "Runtime container is restarting.", requeue: true,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressCreated}: {
+		physicalContainerStateNotStarted: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerCreated,
 			message: "Runtime container has been created but is not running.", requeue: true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressRemoving}: {
+		physicalContainerStateRemoving: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerRemoving,
 			message: "Runtime container is being removed.", requeue: true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressExited}: {
+		physicalContainerStateExited: {
 			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerExited,
 			message: "Runtime container has exited.",
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressDead}: {
+		physicalContainerStateDead: {
 			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerDead,
 			message: "Runtime container is dead.",
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressUnknown}: {
+		physicalContainerStateUnknown: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerStatusUnknown,
 			requeue: true,
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressMissing}: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerMissing,
+		physicalContainerStateMissing: {
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerMissing,
 			message: "Runtime container was not found.",
 		},
-		{state: physicalContainerStateRuntime, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateInspectFailed: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerInspectFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateStop, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateStopRetry: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerStopFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateRemove, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateStopping: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerReasonStopRequested, message: "Waiting to stop the runtime container.",
+			requeue: true,
+		},
+		physicalContainerStateStopped: {
+			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStopRequested,
+			message: "Runtime container is already stopped or was never started.",
+		},
+		physicalContainerStateRemoveRetry: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateResolve, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerStateResolveRetry: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerStateInvalid, progress: physicalResourceProgressFailed}: {
+		physicalContainerStateInvalid: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},
@@ -407,8 +448,8 @@ func storeStartedPhysicalContainerData(
 ) (types.NamespacedName, bool) {
 	startedData := &physicalContainerData{
 		resourceUID: container.UID,
-		state:       physicalContainerStateRuntime,
-		progress:    physicalResourceProgressCreated,
+		state:       physicalContainerStateNotStarted,
+
 		containerID: containerID,
 	}
 	owner, updated := containerData.UpdateChangingStateKeyIfUnclaimed(

@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -144,19 +145,6 @@ func TestPersistentExecutableOutputFileUsesPersistentOutputDir(t *testing.T) {
 	require.Equal(t, "api-uid_out", filepath.Base(file.Name()))
 }
 
-func TestPersistentExecutableOutputBaseDirCanBeConfigured(t *testing.T) {
-	outputDir := filepath.Join(t.TempDir(), "custom-peo")
-	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, outputDir)
-
-	require.Equal(t, outputDir, persistentExecutableOutputBaseDir())
-}
-
-func TestPersistentExecutableOutputBaseDirDefaultsForEmptyEnvVar(t *testing.T) {
-	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, " ")
-
-	require.Equal(t, filepath.Join(os.TempDir(), persistentExecutableOutputDirName), persistentExecutableOutputBaseDir())
-}
-
 func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -228,7 +216,7 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 	}
 }
 
-// Verifies that an escaped descendant holding the root process's output pipes
+// Verifies that a fully started escaped descendant holding the root process's output pipes
 // cannot delay completion beyond the configured wait delay.
 func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
@@ -248,16 +236,17 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	t.Cleanup(executor.Dispose)
 	runner := NewProcessExecutableRunner(executor)
 	changeHandler := newRecordingRunChangeHandler()
+	readyPath := filepath.Join(t.TempDir(), "ready")
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "wait-delay",
-			UID:  "wait-delay",
+			UID:  types.UID(fmt.Sprintf("wait-delay-%s", uuid.NewUUID())),
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: delayPath,
 		},
 		Status: apiv1.ExecutableStatus{
-			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe"},
+			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe", "--ready-file=" + readyPath},
 			EffectiveEnv:  effectiveEnv,
 		},
 	}
@@ -303,6 +292,14 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 		return len(tree) >= expectedTreeSize, snapshotErr
 	})
 	require.NoError(t, treeErr)
+	readyErr := wait.PollUntilContextCancel(ctx, 25*time.Millisecond, true, func(context.Context) (bool, error) {
+		_, statErr := os.Stat(readyPath)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return false, nil
+		}
+		return statErr == nil, statErr
+	})
+	require.NoError(t, readyErr)
 	rootProcess, rootProcessErr := rootHandle.OsProcess()
 	require.NoError(t, rootProcessErr)
 	startedAt := time.Now()

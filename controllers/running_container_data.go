@@ -21,6 +21,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -75,10 +76,10 @@ type runningContainerData struct {
 	// or when the Container is deleted. There is a small chance
 	// that the file might not be deleted if Container startup is in progress when DCP is asked to shut down,
 	// but we do not consider this a problem worth slowing down the shutdown process.
-	startupStdoutLog *startupLog
+	startupStdoutLog *logs.CaptureFile
 
 	// Standard error content from startup commands will be saved to this log.
-	startupStderrLog *startupLog
+	startupStderrLog *logs.CaptureFile
 
 	networkConnections map[containerNetworkConnectionKey]bool
 
@@ -262,14 +263,14 @@ func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log
 		return
 	}
 
-	stdoutLog, stdoutLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStdout)
+	stdoutLog, stdoutLogErr := logs.NewCaptureFile(ctr, apiv1.LogStreamSourceStartupStdout)
 	if stdoutLogErr != nil {
 		log.Error(stdoutLogErr, "Failed to create temporary file for capturing container startup standard output data", "Container", ctr.NamespacedName().String())
 	} else {
 		rcd.startupStdoutLog = stdoutLog
 	}
 
-	stderrLog, stderrLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStderr)
+	stderrLog, stderrLogErr := logs.NewCaptureFile(ctr, apiv1.LogStreamSourceStartupStderr)
 	if stderrLogErr != nil {
 		log.Error(stderrLogErr, "Failed to create temporary file for capturing container startup standard error data", "Container", ctr.NamespacedName().String())
 	} else {
@@ -280,12 +281,12 @@ func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log
 func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
-		stdoutLog.Close(startupLogCloseOptionDefault, log)
+		stdoutLog.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
 
 	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
-		stderrLog.Close(startupLogCloseOptionDefault, log)
+		stderrLog.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
 }
 
@@ -293,13 +294,13 @@ func (rcd *runningContainerData) deleteStartupLogFiles(log logr.Logger) {
 	stdoutLog := rcd.startupStdoutLog
 	rcd.startupStdoutLog = nil
 	if stdoutLog != nil {
-		stdoutLog.Close(startupLogDisposeOnClose, log)
+		stdoutLog.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
 	}
 
 	stderrLog := rcd.startupStderrLog
 	rcd.startupStderrLog = nil
 	if stderrLog != nil {
-		stderrLog.Close(startupLogDisposeOnClose, log)
+		stderrLog.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
 	}
 }
 
@@ -308,12 +309,12 @@ func (rcd *runningContainerData) getStartupLogWriters() (usvc_io.ParagraphWriter
 
 	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
-		stdoutWriter = stdoutLog.writer
+		stdoutWriter = stdoutLog.Writer
 	}
 
 	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
-		stderrWriter = stderrLog.writer
+		stderrWriter = stderrLog.Writer
 	}
 
 	return stdoutWriter, stderrWriter
@@ -417,13 +418,13 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 
 	startupStoutLog := rcd.startupStdoutLog
 	if startupStoutLog != nil && ctr.Status.StartupStdOutFile == "" {
-		ctr.Status.StartupStdOutFile = startupStoutLog.file.Name()
+		ctr.Status.StartupStdOutFile = startupStoutLog.Path
 		change |= statusChanged
 	}
 
 	startupStderrLog := rcd.startupStderrLog
 	if startupStderrLog != nil && ctr.Status.StartupStdErrFile == "" {
-		ctr.Status.StartupStdErrFile = startupStderrLog.file.Name()
+		ctr.Status.StartupStdErrFile = startupStderrLog.Path
 		change |= statusChanged
 	}
 

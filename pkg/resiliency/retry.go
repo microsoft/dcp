@@ -13,11 +13,15 @@ import (
 	"github.com/cenkalti/backoff/v4"
 )
 
-func defaultExponentialBackoff() *backoff.ExponentialBackOff {
+// DefaultRetryTimeout is the standard budget for a bounded recovery operation.
+const DefaultRetryTimeout = 2 * time.Minute
+
+// NewExponentialBackoff returns the standard bounded DCP retry policy.
+func NewExponentialBackoff() *backoff.ExponentialBackOff {
 	return backoff.NewExponentialBackOff(
 		backoff.WithInitialInterval(200*time.Millisecond),
 		backoff.WithMaxInterval(10*time.Second),
-		backoff.WithMaxElapsedTime(2*time.Minute),
+		backoff.WithMaxElapsedTime(DefaultRetryTimeout),
 	)
 }
 
@@ -26,7 +30,7 @@ func defaultExponentialBackoff() *backoff.ExponentialBackOff {
 // - a permanent error occurs, or
 // - passed context is cancelled.
 func RetryGetExponential[T any](ctx context.Context, factory func() (T, error)) (T, error) {
-	return RetryGet(ctx, defaultExponentialBackoff(), factory)
+	return RetryGet(ctx, NewExponentialBackoff(), factory)
 }
 
 // Try calling factory function with given backoff policy until a value is successfully created,
@@ -58,7 +62,7 @@ func RetryGet[T any](ctx context.Context, b backoff.BackOff, factory func() (T, 
 // - a permanent error occurs, or
 // - passed context is cancelled.
 func RetryExponential(ctx context.Context, operation func() error) error {
-	return Retry(ctx, defaultExponentialBackoff(), operation)
+	return Retry(ctx, NewExponentialBackoff(), operation)
 }
 
 // Try calling operation function with exponential back-off until either:
@@ -69,7 +73,7 @@ func RetryExponential(ctx context.Context, operation func() error) error {
 func RetryExponentialWithTimeout(ctx context.Context, timeout time.Duration, operation func() error) error {
 	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, timeout)
 	defer cancelTimeoutCtx()
-	return Retry(timeoutCtx, defaultExponentialBackoff(), operation)
+	return Retry(timeoutCtx, NewExponentialBackoff(), operation)
 }
 
 // Try calling operation function with exponential back-off until it succeeds,

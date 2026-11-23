@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,8 +24,10 @@ import (
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -105,14 +109,20 @@ func TestExpectStringsMultiline(t *testing.T) {
 	b.Reset()
 }
 
-func TestUnmarshalContainerNormalizesName(t *testing.T) {
+// Verifies that unmarshalContainer normalizes runtime names and preserves separate entrypoint,
+// command, and environment values while retaining combined arguments for existing consumers.
+func TestUnmarshalContainerPreservesLaunchConfiguration(t *testing.T) {
 	t.Parallel()
 
 	inspected := ct.InspectedContainer{}
-	err := unmarshalContainer([]byte(`{"Id":"container-id","Name":"/container-name"}`), &inspected)
+	err := unmarshalContainer([]byte(`{"Id":"container-id","Name":"/container-name","Config":{"Entrypoint":["entrypoint","--entrypoint-arg"],"Cmd":["command","--command-arg"],"Env":["RUNTIME=value"]}}`), &inspected)
 
 	require.NoError(t, err)
 	require.Equal(t, "container-name", inspected.Name)
+	require.Equal(t, []string{"entrypoint", "--entrypoint-arg"}, inspected.Entrypoint)
+	require.Equal(t, []string{"command", "--command-arg"}, inspected.Command)
+	require.Equal(t, []string{"entrypoint", "--entrypoint-arg", "command", "--command-arg"}, inspected.Args)
+	require.Equal(t, map[string]string{"RUNTIME": "value"}, inspected.Env)
 }
 
 func TestInspectedContainerDeserialization(t *testing.T) {
@@ -174,6 +184,78 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 			"com.docker.compose.version": "2.13.0",
 			"com.docker.compose.volume":  "sql-data",
 		}, vols[1].Labels)
+}
+
+// Verifies that InspectVolumes recognizes local and Swarm missing-volume errors,
+// preserves diagnostics, and leaves unrelated failures unmatched.
+func TestInspectVolumesClassifiesMissingVolumeErrors(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		stderr   string
+		notFound bool
+	}{
+		{
+			name:     "local volume",
+			stderr:   "Error response from daemon: get missing-volume: no such volume\n",
+			notFound: true,
+		},
+		{
+			name:     "Swarm volume",
+			stderr:   "Error response from daemon: volume missing-volume not found\n",
+			notFound: true,
+		},
+		{
+			name:     "case insensitive",
+			stderr:   "Error response from daemon: Volume missing-volume NOT FOUND\n",
+			notFound: true,
+		},
+		{
+			name:   "unrelated failure",
+			stderr: "Error response from daemon: volume driver unavailable\n",
+		},
+		{
+			name:   "unrelated missing resource",
+			stderr: "Error response from daemon: network missing-network not found\n",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			executor := internal_testutil.NewTestProcessExecutor(ctx)
+			t.Cleanup(func() {
+				require.NoError(t, executor.Close())
+			})
+			inspectCommand := []string{"docker", "volume", "inspect", "--format", "{{json .}}", "missing-volume"}
+			executor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
+				RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+					_, writeErr := execution.Cmd.Stderr.Write([]byte(testCase.stderr))
+					require.NoError(t, writeErr)
+					return 1
+				},
+			})
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+
+			volumes, inspectErr := orchestrator.InspectVolumes(ctx, ct.InspectVolumesOptions{Volumes: []string{"missing-volume"}})
+
+			require.Empty(t, volumes)
+			require.ErrorContains(t, inspectErr, testCase.stderr)
+			require.ErrorIs(t, inspectErr, ct.ErrIncomplete)
+			if testCase.notFound {
+				require.ErrorIs(t, inspectErr, ct.ErrNotFound)
+				require.NotErrorIs(t, inspectErr, ct.ErrUnmatched)
+			} else {
+				require.NotErrorIs(t, inspectErr, ct.ErrNotFound)
+				require.ErrorIs(t, inspectErr, ct.ErrUnmatched)
+			}
+		})
+	}
 }
 
 func TestReportsContainerEvents(t *testing.T) {
@@ -383,6 +465,67 @@ func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
 	require.True(t, network.IPv6)
 }
 
+type contextObservingExecutor struct {
+	process.Executor
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (executor *contextObservingExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.deadline, executor.hasDeadline = ctx.Deadline()
+	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
+}
+
+// Verifies that ensureSupportedDockerCliVersion uses the ordinary command timeout without extending an earlier caller deadline.
+func TestDockerVersionCheckDeadline(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name          string
+		parentTimeout time.Duration
+	}{
+		{name: "ordinary command timeout", parentTimeout: time.Minute},
+		{name: "earlier caller deadline", parentTimeout: 5 * time.Second},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			testCtx, testCancel := testutil.GetTestContext(t, 0)
+			defer testCancel()
+			executor := internal_testutil.NewTestProcessExecutor(testCtx)
+			t.Cleanup(func() {
+				require.NoError(t, executor.Close())
+			})
+			installDockerVersionAutoExecution(executor, "Docker version 25.0.0, build 1234567\n", 0)
+			observingExecutor := &contextObservingExecutor{Executor: executor}
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), observingExecutor).(*DockerCliOrchestrator)
+			parentCtx, parentCancel := context.WithTimeout(testCtx, testCase.parentTimeout)
+			defer parentCancel()
+			parentDeadline, hasParentDeadline := parentCtx.Deadline()
+			require.True(t, hasParentDeadline)
+
+			before := time.Now()
+			versionErr := orchestrator.ensureSupportedDockerCliVersion(parentCtx)
+			after := time.Now()
+
+			require.NoError(t, versionErr)
+			require.True(t, observingExecutor.hasDeadline)
+			if parentDeadline.Before(before.Add(ordinaryDockerCommandTimeout)) {
+				require.Equal(t, parentDeadline, observingExecutor.deadline)
+			} else {
+				require.False(t, observingExecutor.deadline.Before(before.Add(ordinaryDockerCommandTimeout)))
+				require.False(t, observingExecutor.deadline.After(after.Add(ordinaryDockerCommandTimeout)))
+			}
+		})
+	}
+}
+
 func TestGetStatusChecksDockerVersionBeforeNetworks(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
@@ -569,7 +712,9 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-func TestPullImage(t *testing.T) {
+// Verifies that PullImage captures human-readable output and retries transient identity inspection
+// failures without repeating the successful pull.
+func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -579,26 +724,88 @@ func TestPullImage(t *testing.T) {
 		require.NoError(t, executor.Close())
 	})
 	expectedCommand := []string{
-		"docker", "image", "pull", "--quiet", "example.test/test/image:latest",
+		"docker", "image", "pull", "example.test/test/image:latest",
 	}
 	executor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: expectedCommand,
 		},
 		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
-			_, writeErr := execution.Cmd.Stdout.Write([]byte("sha256:image-id\n"))
+			_, writeErr := execution.Cmd.Stdout.Write([]byte("layer: Pull complete\n"))
 			require.NoError(t, writeErr)
 			return 0
 		},
 	})
+	inspectCommand := []string{"docker", "image", "inspect", "--format", "{{json .}}", "example.test/test/image:latest"}
+	var inspectionAttempts atomic.Int32
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			if inspectionAttempts.Add(1) <= 2 {
+				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Error: No such image: example.test/test/image:latest\n"))
+				require.NoError(t, stderrErr)
+				return 1
+			}
+			_, writeErr := execution.Cmd.Stdout.Write([]byte("{\"Id\":\"sha256:image-id\"}\n"))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+	var output bytes.Buffer
 	orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
 	imageID, pullErr := orchestrator.PullImage(ctx, ct.PullImageOptions{
-		Image: "example.test/test/image:latest",
+		Image:                "example.test/test/image:latest",
+		StreamCommandOptions: ct.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(&output)},
 	})
 
 	require.NoError(t, pullErr)
 	require.Equal(t, "sha256:image-id", imageID)
+	require.Equal(t, "layer: Pull complete\n", output.String())
+	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
+}
+
+// Verifies that PullImage preserves failed-command diagnostics, closes both output streams,
+// and does not inspect or return an image identity after a failed pull.
+func TestPullImageFailurePreservesDiagnosticsAndClosesStreams(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() { require.NoError(t, executor.Close()) })
+	pullCommand := []string{"docker", "image", "pull", "example.test/image:latest"}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: pullCommand},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, stdoutErr := execution.Cmd.Stdout.Write([]byte("Pulling layers\n"))
+			require.NoError(t, stdoutErr)
+			_, stderrErr := execution.Cmd.Stderr.Write([]byte("registry connection failed\n"))
+			require.NoError(t, stderrErr)
+			return 1
+		},
+	})
+	stdout, stderr := testutil.NewBufferWriter(), testutil.NewBufferWriter()
+	orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+	imageID, pullErr := orchestrator.PullImage(ctx, ct.PullImageOptions{
+		Image:                "example.test/image:latest",
+		StreamCommandOptions: ct.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+	})
+	require.ErrorContains(t, pullErr, "non-zero exit code 1")
+	require.Empty(t, imageID)
+	require.Equal(t, "Pulling layers\n", string(stdout.Bytes()))
+	require.Equal(t, "registry connection failed\n", string(stderr.Bytes()))
+	select {
+	case <-stdout.Closed():
+	default:
+		require.FailNow(t, "pull did not close stdout")
+	}
+	select {
+	case <-stderr.Closed():
+	default:
+		require.FailNow(t, "pull did not close stderr")
+	}
+	require.Len(t, executor.FindAll(pullCommand, "", nil), 1)
+	require.Empty(t, executor.FindAll([]string{"docker", "image", "inspect", "--format", "{{json .}}", "example.test/image:latest"}, "", nil))
 }
 
 func TestListNetworksUsesFullIdentifiers(t *testing.T) {

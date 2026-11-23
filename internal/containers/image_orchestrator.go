@@ -9,7 +9,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+
+	"github.com/cenkalti/backoff/v4"
+
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
+
+// ImageReferenceWithDefaultTag makes an implicit latest tag explicit without resolving registry aliases.
+// The reference must be nonempty; tagged and digest-qualified references are preserved.
+func ImageReferenceWithDefaultTag(image string) string {
+	if strings.Contains(image, "@") || strings.LastIndex(image, ":") > strings.LastIndex(image, "/") {
+		return image
+	}
+	return image + ":latest"
+}
 
 // InspectImages command types
 
@@ -40,6 +55,37 @@ type InspectImages interface {
 	// or a failure code from the runtime. Even if the final error is not nil, there may still be some
 	// inspected images returned.
 	InspectImages(ctx context.Context, options InspectImagesOptions) ([]InspectedImage, error)
+}
+
+// InspectPulledImage resolves a successfully pulled reference to its image ID.
+// Inspection failures, including NotFound, retry with a six-second exponential-backoff budget.
+// Recognized runtime outages return immediately so the caller can defer recovery.
+func InspectPulledImage(ctx context.Context, inspector InspectImages, image string) (string, error) {
+	policy := backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(200*time.Millisecond),
+		backoff.WithMultiplier(2),
+		backoff.WithRandomizationFactor(0.1),
+		backoff.WithMaxElapsedTime(6*time.Second),
+	)
+	return resiliency.RetryGet(ctx, policy, func() (string, error) {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return "", resiliency.Permanent(contextErr)
+		}
+		images, inspectErr := inspector.InspectImages(ctx, InspectImagesOptions{Images: []string{image}})
+		if errors.Is(inspectErr, ErrRuntimeNotHealthy) {
+			return "", resiliency.Permanent(inspectErr)
+		}
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if len(images) == 0 {
+			return "", ErrNotFound
+		}
+		if len(images) != 1 || images[0].Id == "" {
+			return "", fmt.Errorf("pulled image %q inspection did not return exactly one non-empty image ID", image)
+		}
+		return images[0].Id, nil
+	})
 }
 
 // BuildImage command types
@@ -131,6 +177,7 @@ type PullImageOptions struct {
 	// Digest of the image to pull (optional)
 	Digest string `json:"Digest,omitempty"`
 
+	StreamCommandOptions
 	TimeoutOption
 }
 

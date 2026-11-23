@@ -13,36 +13,6 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
-type physicalResourceProgress int
-
-const (
-	physicalResourceProgressInProgress physicalResourceProgress = iota + 1
-	physicalResourceProgressCompleted
-	physicalResourceProgressRetryPending
-	physicalResourceProgressFailed
-	physicalResourceProgressNotFound
-	physicalResourceProgressNotReady
-	physicalResourceProgressTerminating
-	physicalResourceProgressNotActive
-	physicalResourceProgressRunning
-	physicalResourceProgressExited
-	physicalResourceProgressDead
-	physicalResourceProgressPaused
-	physicalResourceProgressRestarting
-	physicalResourceProgressCreated
-	physicalResourceProgressRemoving
-	physicalResourceProgressMissing
-	physicalResourceProgressUnknown
-	physicalResourceProgressAbandoned
-	physicalResourceProgressSkipped
-	physicalResourceProgressResultMissing
-)
-
-type physicalResourceProjectionKey[State comparable] struct {
-	state    State
-	progress physicalResourceProgress
-}
-
 type physicalResourceProjection[Phase ~string] struct {
 	phase           Phase
 	conditionStatus metav1.ConditionStatus
@@ -53,48 +23,42 @@ type physicalResourceProjection[Phase ~string] struct {
 }
 
 type physicalResourceProjectionTable[State comparable, Phase ~string] struct {
-	projections  map[physicalResourceProjectionKey[State]]physicalResourceProjection[Phase]
+	projections  map[State]physicalResourceProjection[Phase]
 	invalidPhase Phase
 }
 
 func (table physicalResourceProjectionTable[State, Phase]) project(
 	state State,
-	progress physicalResourceProgress,
 ) (physicalResourceProjection[Phase], bool) {
-	projection, found := table.projections[physicalResourceProjectionKey[State]{
-		state:    state,
-		progress: progress,
-	}]
+	projection, found := table.projections[state]
 	return projection, found
 }
 
 func (table physicalResourceProjectionTable[State, Phase]) apply(
 	state State,
-	progress physicalResourceProgress,
 	message string,
 	phase *Phase,
 	conditions *[]metav1.Condition,
 	generation int64,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
-	return table.applyWithReason(state, progress, "", message, phase, conditions, generation)
+	return table.applyWithReason(state, "", message, phase, conditions, generation)
 }
 
 func (table physicalResourceProjectionTable[State, Phase]) applyWithReason(
 	state State,
-	progress physicalResourceProgress,
 	conditionReason apiv2.ConditionReason,
 	message string,
 	phase *Phase,
 	conditions *[]metav1.Condition,
 	generation int64,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
-	projection, valid := table.project(state, progress)
+	projection, valid := table.project(state)
 	if !valid {
 		projection = physicalResourceProjection[Phase]{
 			phase:           table.invalidPhase,
 			conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
-			message:         fmt.Sprintf("Physical resource reached invalid reconciliation state %v with progress %v.", state, progress),
+			message:         fmt.Sprintf("Physical resource reached invalid reconciliation state %v.", state),
 		}
 	} else {
 		if conditionReason != "" {

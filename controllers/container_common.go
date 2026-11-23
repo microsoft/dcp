@@ -94,7 +94,7 @@ func inspectContainer(findContext context.Context, o containers.ContainerOrchest
 	})
 }
 
-func inspectContainerIfExists(findContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
+func inspectContainerIfExists(findContext context.Context, o containers.InspectContainers, containerID string) (*containers.InspectedContainer, error) {
 	b := exponentialBackoff(containerInspectionTimeout)
 	return resiliency.RetryGet(findContext, b, func() (*containers.InspectedContainer, error) {
 		inspectedCtrs, err := o.InspectContainers(findContext, containers.InspectContainersOptions{Containers: []string{containerID}})
@@ -298,7 +298,7 @@ func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, netwo
 	})
 }
 
-func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestrator, network string) (*containers.InspectedNetwork, error) {
+func inspectNetworkIfExists(ctx context.Context, o containers.InspectNetworks, network string) (*containers.InspectedNetwork, error) {
 	b := exponentialBackoff(networkInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedNetwork, error) {
 		networks, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{network}})

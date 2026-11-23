@@ -8,16 +8,17 @@ package v2
 import (
 	"context"
 	"fmt"
-	"path"
 	"reflect"
 	"regexp"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -44,43 +45,29 @@ const (
 	// PhysicalContainerPhasePaused indicates that the runtime container is paused.
 	PhysicalContainerPhasePaused PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhasePaused)
 
-	// PhysicalContainerPhaseExited indicates that the runtime container has exited.
+	// PhysicalContainerPhaseExited indicates that the container has exited or stop completed before startup.
 	PhysicalContainerPhaseExited PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseExited)
 
 	// PhysicalContainerPhaseUnknown indicates that the runtime container state is unavailable or indeterminate.
 	PhysicalContainerPhaseUnknown PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerPhaseFailed indicates a terminal operation failure.
+	// PhysicalContainerPhaseFailed indicates confirmed runtime absence or a terminal dependency or operation failure.
+	// Replacing a failed dependency does not restart this container's startup.
 	PhysicalContainerPhaseFailed PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseFailed)
 )
 
 const (
-	// PhysicalContainerReasonImageNotFound indicates that the referenced PhysicalContainerImage does not exist.
-	PhysicalContainerReasonImageNotFound ConditionReason = "ImageNotFound"
+	// PhysicalContainerReasonResolvingRuntimeContainer indicates that the runtime container identity is being resolved.
+	PhysicalContainerReasonResolvingRuntimeContainer ConditionReason = "ResolvingRuntimeContainer"
 
-	// PhysicalContainerReasonImageNotReady indicates that the referenced PhysicalContainerImage is not ready.
-	PhysicalContainerReasonImageNotReady ConditionReason = "ImageNotReady"
+	// PhysicalContainerReasonDependenciesNotReady indicates that a referenced dependency is missing, terminating, or not ready.
+	PhysicalContainerReasonDependenciesNotReady ConditionReason = "DependenciesNotReady"
 
-	// PhysicalContainerReasonImageLookupFailed indicates that the referenced PhysicalContainerImage could not be read.
-	PhysicalContainerReasonImageLookupFailed ConditionReason = "ImageLookupFailed"
+	// PhysicalContainerReasonDependencyLookupFailed indicates that a referenced dependency could not be read.
+	PhysicalContainerReasonDependencyLookupFailed ConditionReason = "DependencyLookupFailed"
 
-	// PhysicalContainerReasonVolumeNotFound indicates that a referenced PhysicalContainerVolume does not exist.
-	PhysicalContainerReasonVolumeNotFound ConditionReason = "VolumeNotFound"
-
-	// PhysicalContainerReasonVolumeNotReady indicates that a referenced PhysicalContainerVolume is not ready.
-	PhysicalContainerReasonVolumeNotReady ConditionReason = "VolumeNotReady"
-
-	// PhysicalContainerReasonVolumeLookupFailed indicates that a referenced PhysicalContainerVolume could not be read.
-	PhysicalContainerReasonVolumeLookupFailed ConditionReason = "VolumeLookupFailed"
-
-	// PhysicalContainerReasonNetworkNotFound indicates that a referenced PhysicalContainerNetwork does not exist.
-	PhysicalContainerReasonNetworkNotFound ConditionReason = "NetworkNotFound"
-
-	// PhysicalContainerReasonNetworkNotReady indicates that a referenced PhysicalContainerNetwork is not ready.
-	PhysicalContainerReasonNetworkNotReady ConditionReason = "NetworkNotReady"
-
-	// PhysicalContainerReasonNetworkLookupFailed indicates that a referenced PhysicalContainerNetwork could not be read.
-	PhysicalContainerReasonNetworkLookupFailed ConditionReason = "NetworkLookupFailed"
+	// PhysicalContainerReasonDependencyFailed indicates that a referenced dependency failed terminally.
+	PhysicalContainerReasonDependencyFailed ConditionReason = "DependencyFailed"
 
 	// PhysicalContainerReasonCreating indicates that runtime container creation is in progress.
 	PhysicalContainerReasonCreating ConditionReason = "Creating"
@@ -99,6 +86,9 @@ const (
 
 	// PhysicalContainerReasonStarted indicates that runtime container start completed.
 	PhysicalContainerReasonStarted ConditionReason = "Started"
+
+	// PhysicalContainerReasonStopRequested indicates that stop completed without creating or starting the container.
+	PhysicalContainerReasonStopRequested ConditionReason = "StopRequested"
 
 	// PhysicalContainerReasonCreateFailed indicates that runtime container creation failed.
 	PhysicalContainerReasonCreateFailed ConditionReason = "CreateFailed"
@@ -167,7 +157,8 @@ type PhysicalContainerSpec struct {
 	// Container describes a runtime container to create. Exactly one of containerID or container must be set.
 	Container *PhysicalContainerConfig `json:"container,omitempty"`
 
-	// Stop requests that the tracked runtime container be stopped.
+	// Stop requests that the tracked runtime container be stopped or prevents creation if it has not begun.
+	// Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
 }
 
@@ -201,6 +192,11 @@ type PhysicalContainerConfig struct {
 	// Command is the command arguments passed to the container entrypoint.
 	// +listType=atomic
 	Command []string `json:"command,omitempty"`
+
+	// RunArgs contains additional container runtime arguments passed before the image name.
+	// Arguments are passed literally and in order, without shell parsing or template expansion.
+	// +listType=atomic
+	RunArgs []string `json:"runArgs,omitempty"`
 
 	// Env contains environment variables to set in the container.
 	// +listType=map
@@ -250,6 +246,19 @@ type PhysicalContainerPortMapping struct {
 // PhysicalContainerStatus describes the observed runtime container.
 // +k8s:openapi-gen=true
 type PhysicalContainerStatus struct {
+	// EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.
+	// +listType=atomic
+	EffectiveCommand []string `json:"effectiveCommand,omitempty"`
+
+	// EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.
+	// +listType=atomic
+	EffectiveEntrypoint []string `json:"effectiveEntrypoint,omitempty"`
+
+	// EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
+
 	// Phase summarizes the runtime container lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
 	// +optional
@@ -313,6 +322,43 @@ func (pc *PhysicalContainer) GetGroupVersionResource() schema.GroupVersionResour
 		Version:  GroupVersion.Version,
 		Resource: "physicalcontainers",
 	}
+}
+
+// GetResourceId identifies the resource-specific system log stream.
+func (pc *PhysicalContainer) GetResourceId() string {
+	return fmt.Sprintf("physicalcontainer-%s", pc.UID)
+}
+
+// GetLogSource describes the runtime capture selected by the observed container lifecycle.
+func (pc *PhysicalContainer) GetLogSource() *LogSource {
+	complete := pc.Status.Phase == PhysicalContainerPhaseExited || pc.Status.Phase == PhysicalContainerPhaseFailed
+	available := pc.Status.ContainerID != "" && (!pc.Status.StartedAt.IsZero() || complete)
+	if ready := apimeta.FindStatusCondition(pc.Status.Conditions, string(ConditionReady)); ready != nil &&
+		ready.ObservedGeneration == pc.Generation && ready.Reason == string(PhysicalContainerReasonRuntimeContainerMissing) {
+		complete = true
+	}
+	return &LogSource{
+		Name: pc.Name, UID: pc.UID, ContainerID: pc.Status.ContainerID,
+		Available: available,
+		Complete:  complete,
+	}
+}
+
+func (*PhysicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalContainerLogResource{}}
+}
+
+// PhysicalContainerLogResource registers the physical container log subresource.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalContainerLogResource struct{}
+
+func (*PhysicalContainerLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalContainerLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 func (pc *PhysicalContainer) GetObjectMeta() *metav1.ObjectMeta {
@@ -380,7 +426,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 			containerPath,
 		)...,
 	)
-	errorList = append(errorList, validateSameNamespaceResourceReference(container.ImageRef, pc.Namespace, containerPath.Child("imageRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(container.ImageRef, pc.Namespace, containerPath.Child("imageRef"))...)
 	if container.ContainerName != "" && !validContainerNameRegexp.MatchString(container.ContainerName) {
 		errorList = append(errorList, field.Invalid(containerPath.Child("containerName"), container.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
@@ -388,36 +434,12 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(containerPath.Child("containerName"), "containerName must be set when replaceExisting is true"))
 	}
 
-	networksPath := containerPath.Child("networks")
-	for i, network := range container.Networks {
-		errorList = append(errorList, validateSameNamespaceResourceReference(network.Name, pc.Namespace, networksPath.Index(i).Child("name"))...)
-	}
+	errorList = append(errorList, validateContainerNetworks(container.Networks, pc.Namespace, containerPath.Child("networks"))...)
 	errorList = append(errorList, ValidateVolumeMounts(container.VolumeMounts, pc.Namespace, containerPath.Child("volumeMounts"))...)
 	errorList = append(errorList, ValidateContainerPorts(container.Ports, containerPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 
-	createFilesPath := containerPath.Child("createFiles")
-	for i, createFile := range container.CreateFiles {
-		createFilePath := createFilesPath.Index(i)
-		if createFile.Destination != "" && !path.IsAbs(createFile.Destination) {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("destination"), createFile.Destination, "destination must be absolute"))
-		}
-		if createFile.Umask != nil && !(*createFile.Umask).IsRegular() {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("umask"), *createFile.Umask, "umask must not include type bits"))
-		}
-		if len(createFile.Entries) == 0 {
-			errorList = append(errorList, field.Required(createFilePath.Child("entries"), "at least one child entry must be specified"))
-		}
-		for j, item := range createFile.Entries {
-			errorList = append(errorList, item.Validate(createFilePath.Child("entries").Index(j))...)
-		}
-		if createFile.DefaultOwner < 0 {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("defaultOwner"), createFile.DefaultOwner, "default owner must be a non-negative integer"))
-		}
-		if createFile.DefaultGroup < 0 {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("defaultGroup"), createFile.DefaultGroup, "default group must be a non-negative integer"))
-		}
-	}
+	errorList = append(errorList, validateCreateFiles(container.CreateFiles, containerPath.Child("createFiles"))...)
 
 	return errorList
 }
@@ -472,6 +494,8 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainer)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*PhysicalContainer)(nil)
+var _ apiserver_resource.GenericSubResource = (*PhysicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainer)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerList)(nil)

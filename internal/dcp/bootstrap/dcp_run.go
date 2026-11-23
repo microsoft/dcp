@@ -38,6 +38,7 @@ type DcpRunEventHandlers struct {
 
 // DcpRun() starts the API server and controllers and waits for the signal to terminate them.
 // It serves as a "skeleton" for commands such as "up" and "start-apiserver".
+// It waits for API server shutdown, bounded by the server's graceful-shutdown timeout, before returning.
 //
 // onApiServerReady, when non-nil, is invoked once the API server's listener is accepting
 // connections and the kubeconfig file has been saved. It is intentionally called before
@@ -146,6 +147,10 @@ func DcpRun(
 	if apiServerErr != nil {
 		return apiServerErr
 	}
+	defer func() {
+		cancelApiServerCtx()
+		<-apiServerShutdown
+	}()
 
 	if onApiServerReady != nil {
 		onApiServerReady()

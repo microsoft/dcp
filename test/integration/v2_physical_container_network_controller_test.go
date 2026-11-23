@@ -73,7 +73,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	require.Len(t, inspectedNetworks, 1)
 	require.Equal(t, networkName, inspectedNetworks[0].Name)
 
-	labels := runtimeNetworkLabels(t, ctx, networkName)
+	labels := containerNetworkLabels(t, ctx, networkName)
 	require.Equal(t, "test-value", labels["test-label"])
 	require.Equal(t, string(updatedNetwork.UID), labels["com.microsoft.developer.usvc-dev.uid"])
 	require.Equal(t, "false", labels[controllers.PersistentLabel])
@@ -113,6 +113,8 @@ func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T)
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
+// Verifies that PhysicalContainerNetwork removes its container network and publishes the final
+// disposition while a logical hold retains the API object.
 func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -124,24 +126,32 @@ func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *
 
 	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "deleted-network",
-			Namespace: namespace.Name,
+			Name:       "deleted-network",
+			Namespace:  namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
 			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
+	removeDependencyHoldOnCleanup(t, ctx, network, controllers.LogicalBackingFinalizer)
 
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
 
 	require.NoError(t, client.Delete(ctx, network))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
+	cleaned := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoved)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 }
 
 func TestV2PhysicalContainerNetworkControllerReportsDeletionFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -259,7 +269,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
-	require.Equal(t, "true", runtimeNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
+	require.Equal(t, "true", containerNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
 
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
@@ -505,7 +515,7 @@ func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuring
 				ContainerName:          "v2-pcn-ns-preserved-container",
 				RetainRuntimeContainer: true,
 				Networks: []apiv2.ContainerNetworkConnectionConfig{
-					{Name: network.Name},
+					{NetworkRef: network.Name},
 				},
 			},
 		},
@@ -635,6 +645,8 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 	require.Len(t, inspectedNetworks, 1)
 }
 
+// Verifies that an ambiguous network create error is reported before inspection, then subsequent
+// reconciliation verifies the owned network and adopts it without issuing another create.
 func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -656,12 +668,23 @@ func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFa
 	}
 	require.NoError(t, client.Create(ctx, network))
 
+	failedAttempt := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
+			ready != nil && ready.Reason == string(apiv2.PhysicalContainerNetworkReasonCreateFailed), nil
+	})
+	require.Contains(t, failedAttempt.Status.Conditions[0].Message, "simulated lost create response")
+	require.Empty(t, failedAttempt.Status.NetworkID)
+	require.Zero(t, containerOrchestrator.InspectNetworkCallCount(networkName))
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	require.NotEmpty(t, readyNetwork.Status.NetworkID)
 	require.Equal(t, networkName, readyNetwork.Status.NetworkName)
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
+// Verifies that PhysicalContainerNetwork preserves a missing runtime's identity and details,
+// never adopts its same-name replacement, and leaves that replacement intact on deletion.
 func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -695,9 +718,34 @@ func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *tes
 
 	missingNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseUnknown)
 	requireReadyCondition(t, missingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
+	require.Equal(t, readyNetwork.Status.NetworkID, missingNetwork.Status.NetworkID)
+	require.Equal(t, readyNetwork.Status.NetworkName, missingNetwork.Status.NetworkName)
+	require.Equal(t, readyNetwork.Status.Driver, missingNetwork.Status.Driver)
+	require.Equal(t, readyNetwork.Status.CreatedAt, missingNetwork.Status.CreatedAt)
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+
+	replacementID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	require.NoError(t, createErr)
+	require.NotEqual(t, readyNetwork.Status.NetworkID, replacementID)
+	inspectCount := containerOrchestrator.InspectNetworkCallCount(readyNetwork.Status.NetworkID)
+	missingNetwork.Annotations["test-probe"] = "replacement"
+	require.NoError(t, client.Update(ctx, missingNetwork))
+	waitInspectNetworkCallCount(t, ctx, containerOrchestrator, readyNetwork.Status.NetworkID, inspectCount+1)
+	currentNetwork := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, client.Get(ctx, network.NamespacedName(), currentNetwork))
+	requireReadyCondition(t, currentNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
+	require.Equal(t, readyNetwork.Status.NetworkID, currentNetwork.Status.NetworkID)
+
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
+	retained, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{replacementID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, retained, 1)
+	require.Equal(t, replacementID, retained[0].Id)
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -762,6 +810,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testi
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -807,6 +856,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testin
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromReplacementFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -958,7 +1008,7 @@ func waitRuntimeNetworkMissing(t *testing.T, ctx context.Context, networkID stri
 	require.NoError(t, waitErr)
 }
 
-func runtimeNetworkLabels(t *testing.T, ctx context.Context, networkName string) map[string]string {
+func containerNetworkLabels(t *testing.T, ctx context.Context, networkName string) map[string]string {
 	t.Helper()
 
 	listedNetworks, listErr := containerOrchestrator.ListNetworks(ctx, containers.ListNetworksOptions{})

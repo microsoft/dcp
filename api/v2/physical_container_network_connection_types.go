@@ -102,8 +102,8 @@ func (connection *PhysicalContainerNetworkConnection) Validate(ctx context.Conte
 	}
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(connection.Annotations, field.NewPath("metadata", "annotations"))...)
-	errorList = append(errorList, validateSameNamespaceResourceReference(connection.Spec.ContainerRef, connection.Namespace, specPath.Child("containerRef"))...)
-	errorList = append(errorList, validateSameNamespaceResourceReference(connection.Spec.NetworkRef, connection.Namespace, specPath.Child("networkRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(connection.Spec.ContainerRef, connection.Namespace, specPath.Child("containerRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(connection.Spec.NetworkRef, connection.Namespace, specPath.Child("networkRef"))...)
 	return errorList
 }
 

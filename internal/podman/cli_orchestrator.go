@@ -394,24 +394,31 @@ func (pco *PodmanCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", fmt.Errorf("must specify an image to pull")
 	}
 
-	args := []string{"image", "pull", "--quiet"}
-	if options.Digest != "" {
-		args = append(args, options.Image+"@"+options.Digest)
-	} else {
-		args = append(args, options.Image)
+	args := []string{"image", "pull"}
+	if options.StdOutStream == nil && options.StdErrStream == nil {
+		args = append(args, "--quiet")
 	}
+	imageReference := options.Image
+	if options.Digest != "" {
+		imageReference += "@" + options.Digest
+	}
+	args = append(args, imageReference)
 
 	cmd := makePodmanCommand(args...)
 	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "PullImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	return asId(outBuf)
+	imageID, inspectErr := containers.InspectPulledImage(ctx, pco, imageReference)
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
+	}
+	return imageID, nil
 }
 
 func (pco *PodmanCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
@@ -637,8 +644,9 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
 
-	exitCh := make(chan int32)
+	exitCh := make(chan int32, 1)
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
@@ -1505,6 +1513,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 		}
 	}
 
+	ic.Entrypoint, ic.Command = pci.Config.Entrypoint, pci.Config.Cmd
 	ic.Args = append(ic.Args, pci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, pci.Config.Cmd...)
 

@@ -36,6 +36,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/logs/containerlogs"
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
+	"github.com/microsoft/dcp/internal/logs/v2resourcelogs"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
@@ -58,6 +59,7 @@ type ApiServerRunConfig struct {
 	// It should NOT be assumed that this is identical to the cancellation function for the API server run context.
 	// The API server will be shut down by cancelling the run context, but that in general
 	// happens asynchronously to the call to RequestShutdown().
+	// It must not wait for API server shutdown, since it can be called from an active HTTP request.
 	// Mandatory, must not be nil.
 	RequestShutdown func(ApiServerResourceCleanup)
 
@@ -113,12 +115,8 @@ func (s *ApiServer) Name() string {
 	return s.name
 }
 
-// Runs the API server.
-//
-// The passed runCtx is used to control the lifecycle of the API server. When that context is cancelled,
-// the API server should terminate all requests in progress and shut down gracefully.
-//
-
+// Runs the API server. Canceling runCtx starts graceful shutdown and cancels long-running requests.
+// The returned channel closes after finite requests finish or the server shutdown timeout elapses.
 func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
@@ -224,6 +222,10 @@ func (s *ApiServer) Dispose() error {
 		allErrors = errors.Join(allErrors, rls.Dispose())
 		return true // Continue iteration
 	})
+	apiv2.ResourceLogStreamers.Range(func(_ schema.GroupVersionResource, streamer apiv2.ResourceLogStreamer) bool {
+		allErrors = errors.Join(allErrors, streamer.Dispose())
+		return true
+	})
 
 	// Remove the kubeconfig file (best effort)
 	_ = os.Remove(s.config.Path())
@@ -309,10 +311,14 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 	// The following is necessary for the API server to correctly deserialize log request parameters into LogOptions instance.
 	// (the scheme in ExtraConfig contains DCP type definitions, including LogOptions).
 	disableOpenApiForLogsSubresource(config.GenericConfig, apiv1.PersistentTypes)
+	disableOpenApiForLogsSubresource(config.GenericConfig, apiv2.PersistentTypes)
 
 	err := apiv1.RegisterLogOptionsConversions(config.ExtraConfig.Scheme)
 	if err != nil {
 		return err
+	}
+	if v2ConversionErr := apiv2.RegisterLogOptionsConversions(config.ExtraConfig.Scheme); v2ConversionErr != nil {
+		return v2ConversionErr
 	}
 	config.ExtraConfig.ParameterCodec = apiruntime.NewParameterCodec(config.ExtraConfig.Scheme)
 
@@ -333,6 +339,16 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 		(&apiv1.ContainerExec{}).GetGroupVersionResource(),
 		stdiologs.LogStreamer(),
 	)
+	v2ResourceStreamer := v2resourcelogs.NewLogStreamer(log.WithName("v2-resource-logstreamer"))
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerExec{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerExec{}).GetGroupVersionResource(), v2ResourceStreamer)
 
 	return nil
 }
@@ -380,6 +396,7 @@ func addDcpHttpHandlers(
 		return namespaceWatchSourceErr
 	}
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
+		handler = withLongRunningRequestCancellation(handler, ctx, c.LongRunningFunc, log)
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler

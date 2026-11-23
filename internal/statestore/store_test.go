@@ -53,8 +53,7 @@ func openTestStore(t *testing.T, ctx context.Context, path string) *Store {
 
 	require.NoError(t, usvc_io.EnsureRestrictedDirectory(filepath.Dir(path), osutil.PermissionOnlyOwnerReadWriteTraverse))
 	store, openErr := Open(ctx, Options{
-		Path:        path,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: path,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {
@@ -69,6 +68,7 @@ func (r testLeasableResource) GetLeaseKey() string {
 	return string(r)
 }
 
+// Verifies that sqliteDSN uses URI path separators and clamps sub-millisecond native busy timeouts.
 func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 	t.Parallel()
 
@@ -82,6 +82,33 @@ func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 		"file:C:/Users/runner/AppData/Local/Temp/state.sqlite3?_pragma=busy_timeout%3D500",
 		sqliteDSN(`C:\Users\runner\AppData\Local\Temp\state.sqlite3`, 500*time.Millisecond),
 	)
+	require.Equal(
+		t,
+		"file:C:/Users/runner/AppData/Local/Temp/state.sqlite3?_pragma=busy_timeout%3D1",
+		sqliteDSN(`C:\Users\runner\AppData\Local\Temp\state.sqlite3`, 500*time.Microsecond),
+	)
+}
+
+// Verifies that sqliteBusyTimeoutMilliseconds clamps values below one millisecond and truncates larger values to native precision.
+func TestSQLiteBusyTimeoutMilliseconds(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		timeout  time.Duration
+		expected int64
+	}{
+		{timeout: -time.Second, expected: 1},
+		{timeout: 0, expected: 1},
+		{timeout: time.Nanosecond, expected: 1},
+		{timeout: 500 * time.Microsecond, expected: 1},
+		{timeout: time.Millisecond, expected: 1},
+		{timeout: 1500 * time.Microsecond, expected: 1},
+		{timeout: 750 * time.Millisecond, expected: 750},
+	} {
+		t.Run(testCase.timeout.String(), func(t *testing.T) {
+			require.Equal(t, testCase.expected, sqliteBusyTimeoutMilliseconds(testCase.timeout))
+		})
+	}
 }
 
 func TestDefaultStateStoreDirRestrictsLeafDirectoryOnly(t *testing.T) {
@@ -562,8 +589,7 @@ func TestOpenRejectsDirtyUnknownSchemaMajorVersion(t *testing.T) {
 	)
 
 	_, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: storePath,
 	})
 
 	require.ErrorContains(t, openErr, "schema major version 3 is dirty")
@@ -596,8 +622,7 @@ func TestOpenRejectsUnknownSchemaMajorVersion(t *testing.T) {
 	)
 
 	_, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: storePath,
 	})
 
 	require.ErrorContains(t, openErr, "unsupported schema major version 3")
@@ -784,8 +809,7 @@ func TestOpenWithExplicitPathCreatesMissingParentDirectoryRestricted(t *testing.
 	storePath := filepath.Join(stateStoreDir, "state.sqlite3")
 
 	store, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: storePath,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {
@@ -883,6 +907,68 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	lease, acquireErr = store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute)
 	require.NoError(t, acquireErr)
 	require.Equal(t, owner2, lease.OwnerProcess)
+}
+
+// Verifies that exclusive resource leases block same-process claims across store handles
+// and release their claim even when the operation callback panics.
+func TestExclusiveResourceLeaseBlocksSameProcessUntilRelease(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "state.sqlite3")
+	firstStore := openTestStore(t, ctx, path)
+	secondStore := openTestStore(t, ctx, path)
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+	resource := testLeasableResource("image-pulls/example.test/image:latest")
+	first, firstErr := firstStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, firstErr)
+	_, blockedErr := secondStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.ErrorIs(t, blockedErr, ErrResourceLeaseHeld)
+	require.NoError(t, first.Release(ctx))
+	second, secondErr := secondStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, secondErr)
+	require.NoError(t, second.Release(ctx))
+	_, invalidErr := firstStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ResourceLeaseOption(99))
+	require.ErrorIs(t, invalidErr, ErrInvalidArgument)
+	require.Panics(t, func() {
+		_ = firstStore.WithResourceLeaseRetry(ctx, resource, owner, time.Minute, time.Millisecond,
+			func(context.Context, *ResourceLease) error { panic("pull operation failed") }, ExclusiveResourceLease)
+	})
+	afterPanic, afterPanicErr := secondStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, afterPanicErr)
+	require.NoError(t, afterPanic.Release(ctx))
+}
+
+// Verifies that WithResourceLease honors exclusive acquisition for the same process, leaves
+// the held lease intact when blocked, and releases the lease after a successful callback.
+func TestWithResourceLeaseHonorsExclusiveAcquisition(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "state.sqlite3"))
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+	resource := testLeasableResource("containernetworks/shared")
+	held, acquireErr := store.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, acquireErr)
+	callbackRan := false
+	blockedErr := store.WithResourceLease(ctx, resource, owner, time.Minute, func(context.Context, *ResourceLease) error {
+		callbackRan = true
+		return nil
+	}, ExclusiveResourceLease)
+	require.ErrorIs(t, blockedErr, ErrResourceLeaseHeld)
+	require.False(t, callbackRan)
+	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, resource, owner))
+	require.NoError(t, held.Release(ctx))
+	callbackErr := store.WithResourceLease(ctx, resource, owner, time.Minute, func(callbackCtx context.Context, lease *ResourceLease) error {
+		callbackRan = true
+		require.Equal(t, resource.GetLeaseKey(), lease.ResourceKey)
+		return store.VerifyResourceLeaseHeld(callbackCtx, resource, owner)
+	}, ExclusiveResourceLease)
+	require.NoError(t, callbackErr)
+	require.True(t, callbackRan)
+	require.ErrorIs(t, store.VerifyResourceLeaseHeld(ctx, resource, owner), ErrResourceLeaseNotHeld)
 }
 
 func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T) {
@@ -1005,6 +1091,8 @@ func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t 
 	require.NoError(t, retryErr)
 }
 
+// Verifies that WithResourceLease returns contention without invoking its callback or releasing
+// the held claim, including exclusive acquisition by the same process.
 func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 	t.Parallel()
 
@@ -1030,6 +1118,15 @@ func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 
 	require.ErrorIs(t, leaseErr, ErrResourceLeaseHeld)
 	require.False(t, callbackCalled)
+
+	exclusiveCallbackCalled := false
+	exclusiveErr := store1.WithResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute, func(context.Context, *ResourceLease) error {
+		exclusiveCallbackCalled = true
+		return nil
+	}, ExclusiveResourceLease)
+	require.ErrorIs(t, exclusiveErr, ErrResourceLeaseHeld)
+	require.False(t, exclusiveCallbackCalled)
+	require.NoError(t, store1.VerifyResourceLeaseHeld(ctx, testLeasableResource("container/test"), owner1))
 }
 
 func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {

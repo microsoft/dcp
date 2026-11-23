@@ -39,8 +39,8 @@ const (
 	STILL_ACTIVE = 259
 )
 
-// Verifies that delay's forked child breaks away from the parent's Windows job
-// and remains running after closing that job terminates the parent.
+// Verifies that ForkFromParent breaks a fully started child away from the parent's Windows job
+// so closing that job terminates the parent without terminating the child.
 func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
@@ -69,7 +69,8 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 
 	delayPath, delayPathErr := int_testutil.GetTestToolPath("delay")
 	require.NoError(t, delayPathErr)
-	cmd := exec.Command(delayPath, "--delay=60s", "--child-spec=1", "--fork-children")
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.Command(delayPath, "--delay=60s", "--child-spec=1", "--fork-children", "--ready-file="+readyPath)
 	commandLine, commandLineErr := windows.UTF16PtrFromString(windows.ComposeCommandLine(cmd.Args))
 	require.NoError(t, commandLineErr)
 	startupInfo := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{}))}
@@ -95,7 +96,6 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 	_, resumeErr := windows.ResumeThread(processInfo.Thread)
 	require.NoError(t, resumeErr)
 
-	var childIdentity process.ProcessHandle
 	var childProcess *os.Process
 	childFoundErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(ctx context.Context) (bool, error) {
 		tree, snapshotErr := process.GetProcessTree(ctx, root)
@@ -121,7 +121,6 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 			}
 			imageName := filepath.Base(windows.UTF16ToString(imagePath[:imagePathLength]))
 			if strings.EqualFold(imageName, filepath.Base(delayPath)) {
-				childIdentity = candidateIdentity
 				childProcess = candidateProcess
 				return true, nil
 			}
@@ -133,13 +132,45 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 	})
 	require.NoError(t, childFoundErr, "forked delay child did not appear in the process tree")
 	defer func() {
-		if !isStopped(childIdentity) {
-			killErr := childProcess.Kill()
-			require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "could not clean up delay child: %v", killErr)
+		killErr := childProcess.Kill()
+		if process.IsProcessGoneErr(killErr) {
+			killErr = nil
 		}
-		require.NoError(t, childProcess.Release())
+		require.NoError(t, errors.Join(killErr, childProcess.Release()), "could not clean up delay child")
 	}()
 
+	// A child can be discoverable before its parent's CreateProcess call has returned.
+	// Killing the parent at that point can abort creation even though the child has broken away.
+	readyErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(context.Context) (bool, error) {
+		_, statErr := os.Stat(readyPath)
+		if statErr == nil {
+			return true, nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return false, statErr
+		}
+		parentState, parentWaitErr := windows.WaitForSingleObject(processInfo.Process, 0)
+		if parentWaitErr != nil {
+			return false, parentWaitErr
+		}
+		if parentState != uint32(windows.WAIT_TIMEOUT) {
+			return false, fmt.Errorf("delay parent exited before reporting readiness (wait state %d)", parentState)
+		}
+		return false, nil
+	})
+	require.NoError(t, readyErr, "delay parent did not finish starting its child")
+
+	var childInJob int32
+	var membershipErr error
+	require.NoError(t, childProcess.WithHandle(func(nativeHandle uintptr) {
+		success, _, callErr := windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob").Call(
+			nativeHandle, uintptr(jobObject), uintptr(unsafe.Pointer(&childInJob)))
+		if success == 0 {
+			membershipErr = fmt.Errorf("could not query delay child job membership: %w", callErr)
+		}
+	}))
+	require.NoError(t, membershipErr)
+	require.Zero(t, childInJob, "forked delay child must not belong to the parent's job")
 	require.NoError(t, windows.CloseHandle(jobObject))
 	jobObject = windows.InvalidHandle
 	rootExitErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(context.Context) (bool, error) {
@@ -147,8 +178,15 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 		return waitResult == windows.WAIT_OBJECT_0, waitErr
 	})
 	require.NoError(t, rootExitErr)
-	require.True(t, isStopped(root))
-	require.False(t, isStopped(childIdentity), "forked delay child must outlive termination of the parent's job")
+	require.NoError(t, childProcess.WithHandle(func(nativeHandle uintptr) {
+		waitState, waitErr := windows.WaitForSingleObject(windows.Handle(nativeHandle), 0)
+		require.NoError(t, waitErr)
+		var exitCode uint32
+		exitErr := windows.GetExitCodeProcess(windows.Handle(nativeHandle), &exitCode)
+		require.NoError(t, exitErr)
+		require.Equal(t, uint32(windows.WAIT_TIMEOUT), waitState,
+			"forked delay child must outlive termination of the parent's job (exit code %#x)", exitCode)
+	}))
 }
 
 func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout time.Duration) {

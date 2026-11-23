@@ -64,6 +64,11 @@ var (
 
 const pollImmediately = true // Don't wait before polling for the first time
 
+func logicalServiceReady(service *apiv2.LogicalService) bool {
+	return service.Status.Phase == apiv2.LogicalServicePhaseRunning &&
+		apimeta.IsStatusConditionTrue(service.Status.Conditions, string(apiv2.ConditionReady))
+}
+
 func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.CreateContainerOptions {
 	return containers.CreateContainerOptions{
 		Image:          spec.Image,

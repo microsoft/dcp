@@ -360,7 +360,7 @@ func CheckPortAvailable(protocol commonapi.PortProtocol, address string, port in
 
 func IpToString(ip net.IP) string {
 	var address string
-	if IsValidIPv6(ip) {
+	if len(ip.To16()) == net.IPv6len && len(ip.To4()) == 0 {
 		address = fmt.Sprintf("[%s]", ip.String())
 	} else {
 		address = ip.String()

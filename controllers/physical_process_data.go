@@ -6,12 +6,14 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -20,18 +22,63 @@ type physicalProcessDataStateKey string
 type physicalProcessState int
 
 const (
-	physicalProcessStateNamespace physicalProcessState = iota + 1
-	physicalProcessStateResolve
-	physicalProcessStateLaunch
-	physicalProcessStateRuntime
-	physicalProcessStateStop
+	physicalProcessStateExited physicalProcessState = iota + 1
+	physicalProcessStateInspectFailed
 	physicalProcessStateInvalid
+	physicalProcessStateLaunch
+	physicalProcessStateLaunchFailed
+	physicalProcessStateLaunchRetry
+	physicalProcessStateLaunchSkipped
+	physicalProcessStateMissing
+	physicalProcessStateResolve
+	physicalProcessStateResolveFailed
+	physicalProcessStateResolveRetry
+	physicalProcessStateRunning
+	physicalProcessStateStop
+	physicalProcessStateStopRetry
 )
+
+func (state physicalProcessState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalProcessStateExited:
+		return "Exited"
+	case physicalProcessStateInspectFailed:
+		return "InspectFailed"
+	case physicalProcessStateInvalid:
+		return "Invalid"
+	case physicalProcessStateLaunch:
+		return "Launch"
+	case physicalProcessStateLaunchFailed:
+		return "LaunchFailed"
+	case physicalProcessStateLaunchRetry:
+		return "LaunchRetry"
+	case physicalProcessStateLaunchSkipped:
+		return "LaunchSkipped"
+	case physicalProcessStateMissing:
+		return "Missing"
+	case physicalProcessStateResolve:
+		return "Resolve"
+	case physicalProcessStateResolveFailed:
+		return "ResolveFailed"
+	case physicalProcessStateResolveRetry:
+		return "ResolveRetry"
+	case physicalProcessStateRunning:
+		return "Running"
+	case physicalProcessStateStop:
+		return "Stop"
+	case physicalProcessStateStopRetry:
+		return "StopRetry"
+	default:
+		return fmt.Sprintf("physicalProcessState(%d)", int(state))
+	}
+}
 
 type physicalProcessData struct {
 	resourceUID        types.UID
 	state              physicalProcessState
-	progress           physicalResourceProgress
+	workInProgress     bool
 	handle             process.ProcessHandle
 	exitCode           *int32
 	finishedAt         time.Time
@@ -40,13 +87,16 @@ type physicalProcessData struct {
 	cleanupUnconfirmed bool
 	stopCompleted      bool
 	retryAfter         time.Time
+	stdout             *logs.CaptureFile
+	stderr             *logs.CaptureFile
+	outputComplete     bool
 }
 
 func (data *physicalProcessData) Clone() *physicalProcessData {
 	return &physicalProcessData{
 		resourceUID:        data.resourceUID,
 		state:              data.state,
-		progress:           data.progress,
+		workInProgress:     data.workInProgress,
 		handle:             data.handle,
 		exitCode:           cloneInt32Pointer(data.exitCode),
 		finishedAt:         data.finishedAt,
@@ -55,6 +105,9 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		cleanupUnconfirmed: data.cleanupUnconfirmed,
 		stopCompleted:      data.stopCompleted,
 		retryAfter:         data.retryAfter,
+		stdout:             data.stdout,
+		stderr:             data.stderr,
+		outputComplete:     data.outputComplete,
 	}
 }
 
@@ -65,7 +118,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 
 	updated := data.resourceUID != other.resourceUID ||
 		data.state != other.state ||
-		data.progress != other.progress ||
+		data.workInProgress != other.workInProgress ||
 		data.handle != other.handle ||
 		!int32PointersEqual(data.exitCode, other.exitCode) ||
 		!data.finishedAt.Equal(other.finishedAt) ||
@@ -73,6 +126,8 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.failureMessage != other.failureMessage ||
 		data.cleanupUnconfirmed != other.cleanupUnconfirmed ||
 		data.stopCompleted != other.stopCompleted ||
+		data.stdout != other.stdout || data.stderr != other.stderr ||
+		data.outputComplete != other.outputComplete ||
 		!data.retryAfter.Equal(other.retryAfter)
 	if updated {
 		*data = *other.Clone()
@@ -80,14 +135,30 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 	return updated
 }
 
+func (data *physicalProcessData) logsComplete(physicalProcess *apiv2.PhysicalProcess) bool {
+	return data.outputComplete || data.state == physicalProcessStateLaunchFailed ||
+		data.state == physicalProcessStateResolveFailed || data.state == physicalProcessStateLaunchSkipped ||
+		(data.stdout == nil && ((data.state == physicalProcessStateRunning &&
+			physicalProcess.Spec.StdoutFile == "" && physicalProcess.Spec.StderrFile == "") ||
+			data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing))
+}
+
 func (data *physicalProcessData) operationInProgress() bool {
-	return data.progress == physicalResourceProgressInProgress
+	return data != nil && data.workInProgress
 }
 
 func (data *physicalProcessData) applyTo(
 	physicalProcess *apiv2.PhysicalProcess,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
+	if data.stdout != nil {
+		change |= setValue(&physicalProcess.Status.StdoutFile, data.stdout.Path)
+		change |= setValue(&physicalProcess.Status.StderrFile, data.stderr.Path)
+	} else {
+		change |= setValue(&physicalProcess.Status.StdoutFile, physicalProcess.Spec.StdoutFile)
+		change |= setValue(&physicalProcess.Status.StderrFile, physicalProcess.Spec.StderrFile)
+	}
+	change |= setValue(&physicalProcess.Status.LogsComplete, data.logsComplete(physicalProcess))
 	if data.handle.Pid > 0 {
 		change |= setPhysicalProcessPID(&physicalProcess.Status.PID, int64(data.handle.Pid))
 		change |= setTimestamp(&physicalProcess.Status.IdentityTimestamp, metav1.NewMicroTime(data.handle.IdentityTime))
@@ -95,11 +166,11 @@ func (data *physicalProcessData) applyTo(
 	if !data.finishedAt.IsZero() {
 		change |= setTimestamp(&physicalProcess.Status.FinishedAt, metav1.NewMicroTime(data.finishedAt))
 	}
-	change |= setPhysicalProcessExitCode(&physicalProcess.Status.ExitCode, data.exitCode)
+	change |= setExitCode(&physicalProcess.Status.ExitCode, data.exitCode)
 
 	stateChange, delay, valid := physicalProcessProjections.applyWithReason(
 		data.state,
-		data.progress,
+
 		data.failureReason,
 		data.failureMessage,
 		&physicalProcess.Status.Phase,
@@ -111,88 +182,67 @@ func (data *physicalProcessData) applyTo(
 
 var physicalProcessProjections = physicalResourceProjectionTable[physicalProcessState, apiv2.PhysicalProcessPhase]{
 	invalidPhase: apiv2.PhysicalProcessPhaseUnknown,
-	projections: map[physicalResourceProjectionKey[physicalProcessState]]physicalResourceProjection[apiv2.PhysicalProcessPhase]{
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
-			requeue:         true, requeueDelay: LongDelay,
-		},
-		{state: physicalProcessStateLaunch, progress: physicalResourceProgressInProgress}: {
+	projections: map[physicalProcessState]physicalResourceProjection[apiv2.PhysicalProcessPhase]{
+		physicalProcessStateLaunch: {
 			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonLaunching,
 			message:         "Physical process launch is in progress.",
 		},
-		{state: physicalProcessStateLaunch, progress: physicalResourceProgressRetryPending}: {
+		physicalProcessStateLaunchRetry: {
 			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonLaunchFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalProcessStateLaunch, progress: physicalResourceProgressFailed}: {
+		physicalProcessStateLaunchFailed: {
 			phase: apiv2.PhysicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonLaunchFailed,
 		},
-		{state: physicalProcessStateRuntime, progress: physicalResourceProgressRunning}: {
+		physicalProcessStateRunning: {
 			phase: apiv2.PhysicalProcessPhaseRunning, conditionStatus: metav1.ConditionTrue,
 			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessRunning,
 			message:         "Runtime process is running.",
 			requeue:         true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalProcessStateRuntime, progress: physicalResourceProgressExited}: {
+		physicalProcessStateExited: {
 			phase: apiv2.PhysicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessExited,
 			message:         "Runtime process has exited.",
 		},
-		{state: physicalProcessStateRuntime, progress: physicalResourceProgressMissing}: {
+		physicalProcessStateMissing: {
 			phase: apiv2.PhysicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessMissing,
 			message:         "Runtime process was not found.",
 		},
-		{state: physicalProcessStateRuntime, progress: physicalResourceProgressRetryPending}: {
+		physicalProcessStateInspectFailed: {
 			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalProcessStateResolve, progress: physicalResourceProgressRetryPending}: {
+		physicalProcessStateResolveRetry: {
 			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalProcessStateStop, progress: physicalResourceProgressInProgress}: {
+		physicalProcessStateStop: {
 			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonStopping,
 			message:         "Physical process termination is in progress.",
 		},
-		{state: physicalProcessStateStop, progress: physicalResourceProgressRetryPending}: {
+		physicalProcessStateStopRetry: {
 			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonStopFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalProcessStateLaunch, progress: physicalResourceProgressSkipped}: {
+		physicalProcessStateLaunchSkipped: {
 			phase: apiv2.PhysicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonStopRequested,
 			message:         "Physical process was not launched because stop was requested.",
 		},
-		{state: physicalProcessStateResolve, progress: physicalResourceProgressFailed}: {
+		physicalProcessStateResolveFailed: {
 			phase: apiv2.PhysicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
-		{state: physicalProcessStateInvalid, progress: physicalResourceProgressFailed}: {
+		physicalProcessStateInvalid: {
 			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
@@ -230,13 +280,5 @@ func setPhysicalProcessPID(target **int64, value int64) objectChange {
 		return noChange
 	}
 	*target = &value
-	return statusChanged
-}
-
-func setPhysicalProcessExitCode(target **int32, value *int32) objectChange {
-	if int32PointersEqual(*target, value) {
-		return noChange
-	}
-	*target = cloneInt32Pointer(value)
 	return statusChanged
 }

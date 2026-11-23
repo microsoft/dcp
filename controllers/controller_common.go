@@ -46,10 +46,11 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	conflictRequeueDelay              = 100 * time.Millisecond
-	reconciliationDebounceDelay       = 500 * time.Millisecond
-	reconciliationMaxDelay            = 5 * time.Second
-	resourceLeaseRevalidationInterval = 30 * time.Second
+	conflictRequeueDelay                  = 100 * time.Millisecond
+	reconciliationDebounceDelay           = 500 * time.Millisecond
+	reconciliationMaxDelay                = 5 * time.Second
+	resourceLeaseRevalidationInterval     = 30 * time.Second
+	defaultManagerGracefulShutdownTimeout = 45 * time.Second
 
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
@@ -74,16 +75,6 @@ func v2LabelsToMap(labels []commonapi.Label) map[string]string {
 	})
 }
 
-func setRuntimeLabel(labels []commonapi.Label, key string, value string) []commonapi.Label {
-	for i := range labels {
-		if labels[i].Key == key {
-			labels[i].Value = value
-			return labels
-		}
-	}
-	return append(labels, commonapi.Label{Key: key, Value: value})
-}
-
 func physicalResourceCreationLabels(
 	labels []commonapi.Label,
 	persistent bool,
@@ -91,9 +82,9 @@ func physicalResourceCreationLabels(
 	log logr.Logger,
 ) []commonapi.Label {
 	result := append([]commonapi.Label{}, labels...)
-	result = setRuntimeLabel(result, PersistentLabel, fmt.Sprintf("%t", persistent))
+	result = append(result, commonapi.Label{Key: PersistentLabel, Value: fmt.Sprintf("%t", persistent)})
 	if resourceUID != "" {
-		result = setRuntimeLabel(result, uidLabel, string(resourceUID))
+		result = append(result, commonapi.Label{Key: uidLabel, Value: string(resourceUID)})
 	}
 
 	thisProcess, thisProcessErr := process.This()
@@ -102,8 +93,10 @@ func physicalResourceCreationLabels(
 		return result
 	}
 
-	result = setRuntimeLabel(result, CreatorProcessIdLabel, fmt.Sprintf("%d", thisProcess.Pid))
-	result = setRuntimeLabel(result, CreatorProcessStartTimeLabel, thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	result = append(result,
+		commonapi.Label{Key: CreatorProcessIdLabel, Value: fmt.Sprintf("%d", thisProcess.Pid)},
+		commonapi.Label{Key: CreatorProcessStartTimeLabel, Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+	)
 	return result
 }
 
@@ -250,33 +243,28 @@ func EnsureV1PhysicalContainerNetworkReference(
 	return nil
 }
 
-// checkNamespaceReady reports whether a namespace permits a V2 resource to perform runtime work.
-// Deletion paths bypass this check so cleanup can still finish.
-func checkNamespaceReady(
-	ctx context.Context,
-	client ctrl_client.Client,
-	namespaceName string,
-) (bool, apiv2.ConditionReason, error) {
+// checkNamespaceReadiness reads namespaceName using reader and ctx. Readiness requires the namespace
+// controller's finalizer, Active phase, and no deletion timestamp. Otherwise reason describes the
+// unmet prerequisite; err is non-nil only for lookup failures other than NotFound.
+func checkNamespaceReadiness(
+	ctx context.Context, reader ctrl_client.Reader, namespaceName string,
+) (ready bool, reason apiv2.ConditionReason, err error) {
 	namespace := apiv2.Namespace{}
-	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
-	if apierrors.IsNotFound(getErr) {
+	namespaceErr := reader.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
+	switch {
+	case apierrors.IsNotFound(namespaceErr):
 		return false, apiv2.PhysicalResourceReasonNamespaceNotFound, nil
-	}
-	if getErr != nil {
-		return false, apiv2.PhysicalResourceReasonNamespaceLookupFailed, getErr
-	}
-
-	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
+	case namespaceErr != nil:
+		return false, apiv2.PhysicalResourceReasonNamespaceLookupFailed, namespaceErr
+	case !namespace.DeletionTimestamp.IsZero():
 		return false, apiv2.PhysicalResourceReasonNamespaceTerminating, nil
-	}
-	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
+	case !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer):
 		return false, apiv2.PhysicalResourceReasonNamespaceNotReady, nil
-	}
-	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
+	case namespace.Status.Phase != apiv2.NamespacePhaseActive:
 		return false, apiv2.PhysicalResourceReasonNamespaceNotActive, nil
+	default:
+		return true, "", nil
 	}
-
-	return true, "", nil
 }
 
 func namespaceReadinessMessage(namespaceName string, reason apiv2.ConditionReason) string {
@@ -322,14 +310,18 @@ func GetShortId(id string) string {
 type ControllerContextOption string
 
 func NewControllerManagerOptions(lifetimeCtx context.Context, scheme *apiruntime.Scheme, log logr.Logger) ctrl.Options {
+	gracefulShutdownTimeout := defaultManagerGracefulShutdownTimeout
 	return ctrl.Options{
-		Scheme:         scheme,
-		LeaderElection: false,
+		Scheme:                  scheme,
+		LeaderElection:          false,
+		GracefulShutdownTimeout: &gracefulShutdownTimeout,
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
 		},
-		Logger:      log.WithName("ControllerManager"),
-		BaseContext: func() context.Context { return lifetimeCtx },
+		Logger: log.WithName("ControllerManager"),
+		// Runnable cancellation belongs to the manager; inheriting parent cancellation
+		// here would bypass StartControllerManager's cache-startup barrier.
+		BaseContext: func() context.Context { return context.WithoutCancel(lifetimeCtx) },
 		Controller: ctrl_config.Controller{
 			MaxConcurrentReconciles: MaxConcurrentReconciles,
 		},
@@ -436,6 +428,14 @@ func setValue[T comparable](target *T, value T) objectChange {
 		return noChange
 	}
 	*target = value
+	return statusChanged
+}
+
+func setExitCode(target **int32, value *int32) objectChange {
+	if int32PointersEqual(*target, value) {
+		return noChange
+	}
+	*target = cloneInt32Pointer(value)
 	return statusChanged
 }
 

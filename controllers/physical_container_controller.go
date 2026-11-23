@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -32,6 +33,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -41,28 +43,50 @@ import (
 const (
 	physicalContainerImageRefField   = ".spec.imageRef"
 	physicalContainerVolumeRefField  = ".spec.volumeMounts.volumeRef"
-	physicalContainerNetworkRefField = ".spec.networks.name"
+	physicalContainerNetworkRefField = ".spec.networks.networkRef"
 )
 
 var (
+	errPhysicalContainerDependencyFailed = errors.New("container dependency failed")
+
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerDataInitializers = map[physicalContainerState]physicalContainerDataInitializerFunc{
-		physicalContainerStateNamespace: handlePhysicalContainerNamespace,
-		physicalContainerStateResolve:   handlePhysicalContainerResolve,
-		physicalContainerStateImage:     handlePhysicalContainerPrepare,
-		physicalContainerStateVolumes:   handlePhysicalContainerPrepare,
-		physicalContainerStateNetworks:  handlePhysicalContainerPrepare,
-		physicalContainerStateCreate:    handlePhysicalContainerCreate,
-		physicalContainerStateReplace:   handlePhysicalContainerCreateFailure,
-		physicalContainerStateCopyFiles: handlePhysicalContainerCopyFiles,
-		physicalContainerStateStart:     handlePhysicalContainerStart,
-		physicalContainerStateCleanup:   handlePhysicalContainerCreateFailure,
-		// Stop failures recover by observing the runtime container again.
-		physicalContainerStateRuntime: handlePhysicalContainerRuntime,
-		physicalContainerStateStop:    handlePhysicalContainerRuntime,
-		physicalContainerStateInvalid: handlePhysicalContainerTerminal,
-		0:                             handleUnknownPhysicalContainerDataReason,
+		physicalContainerStateResolve:                handlePhysicalContainerResolve,
+		physicalContainerStateResolveRetry:           handlePhysicalContainerResolve,
+		physicalContainerStateDependencies:           handlePhysicalContainerPrepare,
+		physicalContainerStateDependencyFailed:       handlePhysicalContainerPrepare,
+		physicalContainerStateDependencyLookupFailed: handlePhysicalContainerPrepare,
+		physicalContainerStateCreate:                 handlePhysicalContainerCreating,
+		physicalContainerStateCreated:                handlePhysicalContainerCreated,
+		physicalContainerStateCreateRetry:            handlePhysicalContainerRecoverableCreateFailed,
+		physicalContainerStateCreateFailed:           handlePhysicalContainerCreateFailed,
+		physicalContainerStateCreationSkipped:        handlePhysicalContainerTerminal,
+		physicalContainerStateReplaceRetry:           handlePhysicalContainerRecoverableCreateFailed,
+		physicalContainerStateCopyFiles:              handlePhysicalContainerOperationInProgress,
+		physicalContainerStateFilesCopied:            handlePhysicalContainerFilesCreated,
+		physicalContainerStateFileCopyFailed:         handlePhysicalContainerOperationFailed,
+		physicalContainerStateStart:                  handlePhysicalContainerOperationInProgress,
+		physicalContainerStateStarted:                handlePhysicalContainerStarting,
+		physicalContainerStateStartFailed:            handlePhysicalContainerOperationFailed,
+		physicalContainerStateCleanupRetry:           handlePhysicalContainerRecoverableCreateFailed,
+		physicalContainerStateCleanupFailed:          handlePhysicalContainerCreateFailed,
+		physicalContainerStateRunning:                handlePhysicalContainerRunning,
+		physicalContainerStatePaused:                 handlePhysicalContainerRunning,
+		physicalContainerStateRestarting:             handlePhysicalContainerStarting,
+		physicalContainerStateNotStarted:             handlePhysicalContainerStarting,
+		physicalContainerStateRemoving:               handlePhysicalContainerRemoving,
+		physicalContainerStateExited:                 handlePhysicalContainerTerminal,
+		physicalContainerStateDead:                   handlePhysicalContainerTerminal,
+		physicalContainerStateUnknown:                handlePhysicalContainerUnknown,
+		physicalContainerStateMissing:                handlePhysicalContainerMissing,
+		physicalContainerStateInspectFailed:          handlePhysicalContainerUnknown,
+		physicalContainerStateStopped:                handlePhysicalContainerTerminal,
+		physicalContainerStateStopping:               handlePhysicalContainerStopping,
+		physicalContainerStateStopRetry:              handlePhysicalContainerStopping,
+		physicalContainerStateRemoveRetry:            handlePhysicalContainerRemoving,
+		physicalContainerStateInvalid:                handlePhysicalContainerTerminal,
+		0:                                            handleUnknownPhysicalContainerDataReason,
 	}
 )
 
@@ -127,8 +151,8 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 
 		networkNames := make([]string, 0, len(container.Spec.Container.Networks))
 		for i := range container.Spec.Container.Networks {
-			if container.Spec.Container.Networks[i].Name != "" {
-				networkName := commonapi.AsNamespacedName(container.Spec.Container.Networks[i].Name, container.Namespace)
+			if container.Spec.Container.Networks[i].NetworkRef != "" {
+				networkName := commonapi.AsNamespacedName(container.Spec.Container.Networks[i].NetworkRef, container.Namespace)
 				networkNames = append(networkNames, networkName.Name)
 			}
 		}
@@ -249,6 +273,11 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			log.V(1).Info("PhysicalContainer not found, nothing to do...")
+			_, missingData := r.containerData.BorrowByNamespacedName(req.NamespacedName)
+			if missingData != nil {
+				missing := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{UID: missingData.resourceUID}}
+				defer logger.ReleaseResourceLog(missing.GetResourceId())
+			}
 			r.discardPhysicalContainerData(req.NamespacedName, "", nil, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
@@ -259,99 +288,74 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, getErr
 	}
 	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
+	if owner := metav1.GetControllerOf(&container); owner != nil &&
+		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
+		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		if forwardErr != nil {
+			log.Error(forwardErr, "Failed to attach logical container system log stream")
+		} else {
+			log = forwardedLog
+		}
+	}
 
 	r.containerData.RunDeferredOps(req.NamespacedName, &container)
+	_, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 
 	var change objectChange
 	reconciliationDelay := StandardDelay
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, log)
-	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
-		// Make additional changes during the next reconciliation.
+	if !container.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+		change, reconciliationDelay = r.handleDeletionRequest(ctx, &container, data, log)
 	} else {
-		change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, log)
+		change = ensureFinalizer(&container, physicalContainerFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, data, log)
+		}
 	}
-
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, reconciliationDelay, nil, log)
 }
 
 func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
-	log logr.Logger,
-) (objectChange, AdditionalReconciliationDelay) {
-	stateKey, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if data == nil {
-		data = &physicalContainerData{
-			resourceUID: container.UID,
-			state:       physicalContainerStateNamespace,
-			progress:    physicalResourceProgressNotReady,
-		}
-		initialStateKey := physicalContainerDataKey(container)
-		stateKey = initialStateKey
-		// Store() retains the supplied pointer, so keep an unaliased copy for this reconciliation.
-		r.containerData.Store(container.NamespacedName(), initialStateKey, data.Clone())
-	}
-
-	var change objectChange
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		change = r.handleDeletionRequest(ctx, container, data, log)
-	} else {
-		initializer := getStateInitializer(physicalContainerDataInitializers, data.state, log)
-		change = initializer(ctx, r, container, data.state, data, log)
-	}
-	if !hasFinalizer(container, physicalContainerFinalizer) {
-		return change, StandardDelay
-	}
-
-	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
-	dataChange, delay, valid := data.applyTo(container)
-	change |= dataChange
-	if !valid {
-		log.Error(
-			fmt.Errorf("invalid physical container state %v with progress %v", data.state, data.progress),
-			"PhysicalContainer reached invalid reconciliation state",
-		)
-	}
-	return change, delay
-}
-
-func handlePhysicalContainerNamespace(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	_ physicalContainerState,
 	data *physicalContainerData,
 	log logr.Logger,
-) objectChange {
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, container.Namespace)
-	if !namespaceReady {
-		data.state = physicalContainerStateNamespace
-		data.failureMessage = namespaceReadinessMessage(container.Namespace, namespaceReason)
-		switch namespaceReason {
-		case apiv2.PhysicalResourceReasonNamespaceNotFound:
-			data.progress = physicalResourceProgressNotFound
-		case apiv2.PhysicalResourceReasonNamespaceTerminating:
-			data.progress = physicalResourceProgressTerminating
-		case apiv2.PhysicalResourceReasonNamespaceNotActive:
-			data.progress = physicalResourceProgressNotActive
-		default:
-			data.progress = physicalResourceProgressNotReady
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, container.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalContainerPhasePending
+			namespaceMessage := namespaceReadinessMessage(container.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
+				namespacePhase = apiv2.PhysicalContainerPhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&container.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&container.Status.Conditions, apiv2.ConditionReady,
+				container.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
 		}
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
-			data.progress = physicalResourceProgressRetryPending
-			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+		data = &physicalContainerData{
+			resourceUID: container.UID, state: physicalContainerStateResolve,
 		}
-		return noChange
+		r.containerData.Store(container.NamespacedName(), physicalContainerDataKey(container), data.Clone())
 	}
-
-	data.state = physicalContainerStateResolve
-	data.progress = physicalResourceProgressInProgress
-	data.failureMessage = ""
-	return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
+	initializer := getStateInitializer(physicalContainerDataInitializers, data.state, log)
+	change := initializer(ctx, r, container, data.state, data, log)
+	stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+	dataChange, delay, valid := data.applyTo(container)
+	if !valid {
+		log.Error(fmt.Errorf("invalid physical container state %v", data.state),
+			"PhysicalContainer reached invalid reconciliation state")
+	}
+	return change | dataChange, delay
 }
 
 func handlePhysicalContainerResolve(
@@ -363,11 +367,11 @@ func handlePhysicalContainerResolve(
 	log logr.Logger,
 ) objectChange {
 	// An earlier attempt lost the race for the runtime container, so wait before claiming it again.
-	if data.progress == physicalResourceProgressRetryPending {
+	if data.state == physicalContainerStateResolveRetry {
 		if time.Now().Before(data.retryAfter) {
 			return additionalReconciliationNeeded
 		}
-		data.progress = physicalResourceProgressInProgress
+		data.state = physicalContainerStateResolve
 		data.containerID = ""
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
@@ -377,8 +381,28 @@ func handlePhysicalContainerResolve(
 	if containerID == "" {
 		containerID = data.containerID
 	}
+	if containerID == "" && container.Spec.Stop && container.Spec.Container != nil && container.Spec.Container.ReplaceExisting {
+		existing, inspectErr := reconciler.inspectPhysicalContainer(ctx, container.Spec.Container.ContainerName)
+		if errors.Is(inspectErr, containers.ErrNotFound) {
+			data.state = physicalContainerStateCreationSkipped
+			data.failureMessage = ""
+			data.retryAfter = time.Time{}
+			return noChange
+		}
+		if inspectErr == nil && (existing == nil || existing.Id == "") {
+			inspectErr = errors.New("container inspection returned no runtime identity")
+		}
+		if inspectErr != nil {
+			log.Error(inspectErr, "Failed to inspect replacement target for stop")
+			data.state = physicalContainerStateInspectFailed
+			data.failureMessage = fmt.Sprintf("Failed to inspect replacement target for stop: %v", inspectErr)
+			return additionalReconciliationNeeded
+		}
+		containerID = existing.Id
+	}
 	if containerID == "" {
-		return handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
+		data.state = physicalContainerStateDependencies
+		return additionalReconciliationNeeded
 	}
 
 	if data.containerID == "" {
@@ -393,8 +417,7 @@ func handlePhysicalContainerResolve(
 			if owner == (types.NamespacedName{}) {
 				return additionalReconciliationNeeded
 			}
-			data.state = physicalContainerStateResolve
-			data.progress = physicalResourceProgressRetryPending
+			data.state = physicalContainerStateResolveRetry
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
@@ -403,7 +426,8 @@ func handlePhysicalContainerResolve(
 		return additionalReconciliationNeeded
 	}
 
-	return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
+	data.state = physicalContainerStateStarted
+	return additionalReconciliationNeeded
 }
 
 func handlePhysicalContainerPrepare(
@@ -414,95 +438,56 @@ func handlePhysicalContainerPrepare(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
+	if data.state == physicalContainerStateDependencyFailed {
+		return noChange
+	}
+	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
 	data.image = ""
-	data.volumeMounts = nil
-	data.networks = nil
+	if container.Spec.Stop {
+		data.state = physicalContainerStateCreationSkipped
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+		return noChange
+	}
 
-	imageReady, image, imageProgress, imageMessage, imageChange := reconciler.resolvePhysicalContainerImage(ctx, container, log)
+	imageReady, image, imageMessage, imageErr := reconciler.resolvePhysicalContainerImage(ctx, container, log)
+	volumesReady, volumeMounts, volumeMessage, volumeErr := reconciler.resolvePhysicalContainerVolumes(ctx, container, log)
+	networksReady, networks, networkMessage, networkErr := reconciler.resolvePhysicalContainerNetworks(ctx, container, log)
+
+	change := noChange
+	if imageReady {
+		change |= setValue(&container.Status.Image, image)
+	}
+	if dependencyErr := errors.Join(imageErr, volumeErr, networkErr); dependencyErr != nil {
+		data.failureMessage = dependencyErr.Error()
+		data.state = physicalContainerStateDependencyLookupFailed
+		if errors.Is(dependencyErr, errPhysicalContainerDependencyFailed) {
+			data.state = physicalContainerStateDependencyFailed
+		}
+		return change
+	}
+	data.state = physicalContainerStateDependencies
 	if !imageReady {
-		data.state = physicalContainerStateImage
-		data.progress = imageProgress
 		data.failureMessage = imageMessage
-		return imageChange
+		return change
 	}
-
-	volumesReady, volumeMounts, volumeProgress, volumeMessage := reconciler.resolvePhysicalContainerVolumes(ctx, container, log)
 	if !volumesReady {
-		data.state = physicalContainerStateVolumes
-		data.progress = volumeProgress
 		data.failureMessage = volumeMessage
-		return imageChange
+		return change
 	}
-
-	networksReady, networks, networkProgress, networkMessage := reconciler.resolvePhysicalContainerNetworks(ctx, container, log)
 	if !networksReady {
-		data.state = physicalContainerStateNetworks
-		data.progress = networkProgress
 		data.failureMessage = networkMessage
-		return imageChange
+		return change
 	}
 
 	data.image = image
-	data.volumeMounts = volumeMounts
-	data.networks = networks
-	return imageChange | reconciler.schedulePhysicalContainerCreate(container, data, log)
+	return change | reconciler.schedulePhysicalContainerCreate(container, data, volumeMounts, networks, log)
 }
 
-func handlePhysicalContainerCreate(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	state physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	switch data.progress {
-	case physicalResourceProgressInProgress:
-		return handlePhysicalContainerCreating(ctx, reconciler, container, state, data, log)
-	case physicalResourceProgressCompleted:
-		return handlePhysicalContainerCreated(ctx, reconciler, container, state, data, log)
-	default:
-		return handlePhysicalContainerCreateFailure(ctx, reconciler, container, state, data, log)
-	}
-}
-
-func handlePhysicalContainerCopyFiles(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	state physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	if data.progress == physicalResourceProgressCompleted {
-		return handlePhysicalContainerFilesCreated(ctx, reconciler, container, state, data, log)
-	}
-	if data.progress == physicalResourceProgressFailed {
-		return handlePhysicalContainerOperationFailed(ctx, reconciler, container, state, data, log)
-	}
-	return handlePhysicalContainerOperationInProgress(ctx, reconciler, container, state, data, log)
-}
-
-func handlePhysicalContainerStart(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	state physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	if data.progress == physicalResourceProgressCompleted {
-		return handlePhysicalContainerRuntime(ctx, reconciler, container, state, data, log)
-	}
-	if data.progress == physicalResourceProgressFailed {
-		return handlePhysicalContainerOperationFailed(ctx, reconciler, container, state, data, log)
-	}
-	return handlePhysicalContainerOperationInProgress(ctx, reconciler, container, state, data, log)
-}
-
-// Observes the runtime container and records what was seen. When the spec requests a stop, the
-// stop operation takes over before the observed state is applied.
-func handlePhysicalContainerRuntime(
+func handlePhysicalContainerRunning(
 	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
@@ -512,71 +497,179 @@ func handlePhysicalContainerRuntime(
 ) objectChange {
 	containerID := data.containerID
 	if containerID == "" {
-		// The runtime identity has not been captured yet, so resolution owns this reconciliation.
 		data.state = physicalContainerStateResolve
-		data.progress = physicalResourceProgressInProgress
-		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
+		return additionalReconciliationNeeded
 	}
 
 	reconciler.ensurePhysicalContainerWatch(container, log)
 	data.portMappingFailureMessage = ""
 	inspectedContainer, inspectErr := reconciler.inspectPhysicalContainer(ctx, containerID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
-		data.state = physicalContainerStateRuntime
-		data.progress = physicalResourceProgressMissing
+		data.state = physicalContainerStateMissing
 		data.failureMessage = ""
-		connectionChange, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
-		if connectionErr != nil {
-			log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections for missing runtime container")
-			connectionChange |= additionalReconciliationNeeded
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
 		}
-		return connectionChange
+		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect runtime container", "ContainerID", containerID)
-		data.state = physicalContainerStateRuntime
-		data.progress = physicalResourceProgressRetryPending
+		data.state = physicalContainerStateInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
 		return additionalReconciliationNeeded
 	}
 
-	connectionChange, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, container.Spec.Stop, log)
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspectedContainer, log)
+	if data.state != physicalContainerStateRunning && data.state != physicalContainerStatePaused {
+		return change | additionalReconciliationNeeded
+	}
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+		return change | additionalReconciliationNeeded
+	}
+	connectionChange, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, false, log)
 	if connectionErr != nil {
 		log.Error(connectionErr, "Failed to ensure PhysicalContainerNetworkConnections")
 		connectionChange |= additionalReconciliationNeeded
 	}
-	if container.Spec.Stop {
-		return connectionChange | reconciler.stopPhysicalContainer(ctx, container, data, inspectedContainer, log)
-	}
-
-	return connectionChange | reconciler.applyInspectedPhysicalContainerStatus(container, data, inspectedContainer, log)
+	return change | connectionChange
 }
 
-// Stops the runtime container when it is still active and records the resulting state.
-func (r *PhysicalContainerReconciler) stopPhysicalContainer(
+func handlePhysicalContainerStopping(
 	ctx context.Context,
+	r *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
+	_ physicalContainerState,
 	data *physicalContainerData,
-	inspectedContainer *containers.InspectedContainer,
 	log logr.Logger,
 ) objectChange {
+	connectionChange, connectionErr := r.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
+	if connectionErr != nil {
+		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections while stopping")
+		connectionChange |= additionalReconciliationNeeded
+	}
 	containerID := data.containerID
+	inspectedContainer, inspectErr := r.inspectPhysicalContainer(ctx, containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateStopped, ""
+		return connectionChange | additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect stopping runtime container", "ContainerID", containerID)
+		data.state, data.failureMessage = physicalContainerStateStopRetry, inspectErr.Error()
+		return connectionChange | additionalReconciliationNeeded
+	}
 	stoppedContainer, stopErr := r.stopPhysicalContainerIfNecessary(ctx, containerID, inspectedContainer)
 	if errors.Is(stopErr, containers.ErrNotFound) {
-		data.state = physicalContainerStateRuntime
-		data.progress = physicalResourceProgressMissing
+		data.state = physicalContainerStateStopped
 		data.failureMessage = ""
-		return noChange
+		return connectionChange | additionalReconciliationNeeded
 	}
 	if stopErr != nil {
 		log.Error(stopErr, "Failed to stop runtime container", "ContainerID", containerID)
-		data.state = physicalContainerStateStop
-		data.progress = physicalResourceProgressRetryPending
+		data.state = physicalContainerStateStopRetry
 		data.failureMessage = fmt.Sprintf("Failed to stop runtime container: %v", stopErr)
-		return applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
+		return connectionChange | applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
 	}
 
-	return r.applyInspectedPhysicalContainerStatus(container, data, stoppedContainer, log)
+	change := r.applyInspectedPhysicalContainerStatus(container, data, stoppedContainer, log)
+	if data.state == physicalContainerStateNotStarted {
+		data.state = physicalContainerStateStopped
+	}
+	return connectionChange | change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerStarting(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, data *physicalContainerData, log logr.Logger,
+) objectChange {
+	if data.containerID == "" {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
+	reconciler.ensurePhysicalContainerWatch(container, log)
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect starting runtime container", "ContainerID", data.containerID)
+		data.state, data.failureMessage = physicalContainerStateInspectFailed, inspectErr.Error()
+		return additionalReconciliationNeeded
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	switch data.state {
+	case physicalContainerStateExited, physicalContainerStateDead:
+		return change | additionalReconciliationNeeded
+	}
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+	}
+	return change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerUnknown(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, data *physicalContainerData, log logr.Logger,
+) objectChange {
+	if data.containerID == "" {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
+	reconciler.ensurePhysicalContainerWatch(container, log)
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect runtime container", "ContainerID", data.containerID)
+		data.state = physicalContainerStateInspectFailed
+		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
+		return noChange
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	return change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerRemoving(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, data *physicalContainerData, log logr.Logger,
+) objectChange {
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect removing runtime container", "ContainerID", data.containerID)
+		data.state, data.failureMessage = physicalContainerStateRemoveRetry, inspectErr.Error()
+		return noChange
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	return change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerMissing(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, _ *physicalContainerData, log logr.Logger,
+) objectChange {
+	change, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
+	if connectionErr != nil {
+		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections for missing runtime container")
+		change |= additionalReconciliationNeeded
+	}
+	return change
 }
 
 func handlePhysicalContainerCreating(
@@ -592,7 +685,7 @@ func handlePhysicalContainerCreating(
 }
 
 func handlePhysicalContainerCreated(
-	_ context.Context,
+	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
 	_ physicalContainerState,
@@ -600,11 +693,12 @@ func handlePhysicalContainerCreated(
 	log logr.Logger,
 ) objectChange {
 	reconciler.ensurePhysicalContainerWatch(container, log)
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+		return additionalReconciliationNeeded
+	}
 	if len(container.Spec.Container.CreateFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, data, log)
-	}
-	if container.Spec.Stop {
-		return reconciler.skipPhysicalContainerStart(container, data, log)
 	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
 }
@@ -621,7 +715,7 @@ func handlePhysicalContainerOperationInProgress(
 }
 
 func handlePhysicalContainerFilesCreated(
-	_ context.Context,
+	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
 	_ physicalContainerState,
@@ -630,7 +724,8 @@ func handlePhysicalContainerFilesCreated(
 ) objectChange {
 	reconciler.ensurePhysicalContainerWatch(container, log)
 	if container.Spec.Stop {
-		return reconciler.skipPhysicalContainerStart(container, data, log)
+		data.state = physicalContainerStateStopping
+		return additionalReconciliationNeeded
 	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
 }
@@ -651,24 +746,6 @@ func handlePhysicalContainerOperationFailed(
 	}
 	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
 	return connectionChange
-}
-
-func handlePhysicalContainerCreateFailure(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	state physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	switch data.progress {
-	case physicalContainerOperationRetryPending:
-		return handlePhysicalContainerRecoverableCreateFailed(ctx, reconciler, container, state, data, log)
-	case physicalContainerOperationFailed:
-		return handlePhysicalContainerCreateFailed(ctx, reconciler, container, state, data, log)
-	default:
-		return handleUnknownPhysicalContainerDataReason(ctx, reconciler, container, state, data, log)
-	}
 }
 
 func handlePhysicalContainerCreateFailed(
@@ -710,7 +787,8 @@ func handlePhysicalContainerRecoverableCreateFailed(
 	}
 
 	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.Container.ContainerName)
-	return cleanupChange | handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
+	data.state = physicalContainerStateDependencies
+	return cleanupChange | additionalReconciliationNeeded
 }
 
 func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
@@ -724,19 +802,27 @@ func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
 	}
 
 	partialContainerID := data.containerID
+	retryCreation := data.state == physicalContainerStateCreateRetry ||
+		data.state == physicalContainerStateReplaceRetry || data.state == physicalContainerStateCleanupRetry
 	_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 		Containers: []string{partialContainerID},
 		Force:      true,
 	})
 	if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
 		log.Error(removeErr, "Failed to remove partially created runtime container", "ContainerID", partialContainerID)
-		data.state = physicalContainerStateCleanup
+		data.state = physicalContainerStateCleanupFailed
+		if retryCreation {
+			data.state = physicalContainerStateCleanupRetry
+		}
 		data.cleanupMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return additionalReconciliationNeeded, false
 	}
 
-	data.state = physicalContainerStateCreate
+	data.state = physicalContainerStateCreateFailed
+	if retryCreation {
+		data.state = physicalContainerStateCreateRetry
+	}
 	data.containerID = ""
 	data.cleanupMessage = ""
 	data.retryAfter = time.Time{}
@@ -753,59 +839,84 @@ func handleUnknownPhysicalContainerDataReason(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	invalidProgress := data.progress
+
 	data.state = physicalContainerStateInvalid
-	data.progress = physicalResourceProgressFailed
-	data.failureMessage = fmt.Sprintf("Physical container reached invalid reconciliation state %v with progress %v.", state, invalidProgress)
+	data.workInProgress = false
+	data.failureMessage = fmt.Sprintf("Physical container reached invalid reconciliation state %v.", state)
 	data.cleanupMessage = ""
-	log.Error(fmt.Errorf("invalid physical container state %v with progress %v", state, invalidProgress), "Physical container reached invalid reconciliation state")
+	log.Error(fmt.Errorf("invalid physical container state %v", state), "Physical container reached invalid reconciliation state")
 	return noChange
 }
 
 func handlePhysicalContainerTerminal(
-	_ context.Context,
-	_ *PhysicalContainerReconciler,
-	_ *apiv2.PhysicalContainer,
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
 	_ physicalContainerState,
-	_ *physicalContainerData,
-	_ logr.Logger,
+	data *physicalContainerData,
+	log logr.Logger,
 ) objectChange {
-	return noChange
+	change, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
+	if connectionErr != nil {
+		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections for terminal container")
+		change |= additionalReconciliationNeeded
+	}
+	if data.containerID != "" {
+		inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+		if inspectErr != nil {
+			if !errors.Is(inspectErr, containers.ErrNotFound) {
+				log.Error(inspectErr, "Failed to refresh terminal runtime container", "ContainerID", data.containerID)
+			}
+			return change
+		}
+		change |= applyInspectedPhysicalContainerDetails(container, inspected, log)
+	}
+	return change
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
-) (bool, string, physicalResourceProgress, string, objectChange) {
+) (bool, string, string, error) {
 	image := apiv2.PhysicalContainerImage{}
 	imageRef := container.Spec.Container.ImageRef
 	imageName := commonapi.AsNamespacedName(imageRef, container.Namespace)
 	getErr := r.Client.Get(ctx, imageName, &image)
 	if apierrors.IsNotFound(getErr) {
-		return false, "", physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerImage %q does not exist.", imageRef), noChange
+		return false, "", fmt.Sprintf("PhysicalContainerImage %q does not exist.", imageRef), nil
 	}
 	if getErr != nil {
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
-		return false, "", physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr), additionalReconciliationNeeded
+		return false, "", "", fmt.Errorf("get PhysicalContainerImage %q: %w", imageRef, getErr)
 	}
-	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), noChange
+	if image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
+		message := fmt.Sprintf("PhysicalContainerImage %q failed.", imageRef)
+		if ready := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
+			message = fmt.Sprintf("PhysicalContainerImage %q failed: %s: %s", imageRef, ready.Reason, ready.Message)
+		}
+		return false, "", "", fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message)
+	}
+	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&image, LogicalBackingFinalizer) {
+		return false, "", fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), nil
 	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.ImageID == "" {
-		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef), noChange
+		return false, "", fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef), nil
 	}
 
-	return true, image.Status.ImageID, physicalResourceProgressCompleted, "", setValue(&container.Status.Image, image.Status.ImageID)
+	return true, image.Status.ImageID, "", nil
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
-) (bool, []containers.CreateContainerVolumeMount, physicalResourceProgress, string) {
+) (bool, []containers.CreateContainerVolumeMount, string, error) {
 	containerConfig := container.Spec.Container
 	volumeMounts := make([]containers.CreateContainerVolumeMount, 0, len(containerConfig.VolumeMounts))
+	var pendingMessage string
+	var dependencyErr error
 	for i := range containerConfig.VolumeMounts {
 		mount := &containerConfig.VolumeMounts[i]
 		source := mount.Source
@@ -814,17 +925,35 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 			volumeName := commonapi.AsNamespacedName(mount.VolumeRef, container.Namespace)
 			getErr := r.Client.Get(ctx, volumeName, &volume)
 			if apierrors.IsNotFound(getErr) {
-				return false, nil, physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerVolume %q does not exist.", mount.VolumeRef)
+				if pendingMessage == "" {
+					pendingMessage = fmt.Sprintf("PhysicalContainerVolume %q does not exist.", mount.VolumeRef)
+				}
+				continue
 			}
 			if getErr != nil {
 				log.Error(getErr, "Failed to get PhysicalContainerVolume", "VolumeRef", mount.VolumeRef)
-				return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerVolume %q: %v", mount.VolumeRef, getErr)
+				dependencyErr = errors.Join(dependencyErr, fmt.Errorf("get PhysicalContainerVolume %q: %w", mount.VolumeRef, getErr))
+				continue
+			}
+			if volume.Status.Phase == apiv2.PhysicalContainerVolumePhaseFailed {
+				message := fmt.Sprintf("PhysicalContainerVolume %q failed.", mount.VolumeRef)
+				if ready := apimeta.FindStatusCondition(volume.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
+					message = fmt.Sprintf("PhysicalContainerVolume %q failed: %s: %s", mount.VolumeRef, ready.Reason, ready.Message)
+				}
+				dependencyErr = errors.Join(dependencyErr, fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message))
+				continue
 			}
 			if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-				return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerVolume %q is terminating.", mount.VolumeRef)
+				if pendingMessage == "" {
+					pendingMessage = fmt.Sprintf("PhysicalContainerVolume %q is terminating.", mount.VolumeRef)
+				}
+				continue
 			}
 			if volume.Status.Phase != apiv2.PhysicalContainerVolumePhaseReady || volume.Status.VolumeID == "" {
-				return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
+				if pendingMessage == "" {
+					pendingMessage = fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
+				}
+				continue
 			}
 			source = volume.Status.VolumeID
 		}
@@ -837,33 +966,59 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 		})
 	}
 
-	return true, volumeMounts, physicalResourceProgressCompleted, ""
+	if dependencyErr != nil {
+		return false, nil, "", dependencyErr
+	}
+	if pendingMessage != "" {
+		return false, nil, pendingMessage, nil
+	}
+	return true, volumeMounts, "", nil
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
-) (bool, []containers.CreateContainerNetworkOptions, physicalResourceProgress, string) {
+) (bool, []containers.CreateContainerNetworkOptions, string, error) {
 	containerConfig := container.Spec.Container
 	networks := make([]containers.CreateContainerNetworkOptions, 0, len(containerConfig.Networks))
+	var pendingMessage string
+	var dependencyErr error
 	for i := range containerConfig.Networks {
 		networkConfig := &containerConfig.Networks[i]
 		network := apiv2.PhysicalContainerNetwork{}
-		networkName := commonapi.AsNamespacedName(networkConfig.Name, container.Namespace)
+		networkName := commonapi.AsNamespacedName(networkConfig.NetworkRef, container.Namespace)
 		getErr := r.Client.Get(ctx, networkName, &network)
 		if apierrors.IsNotFound(getErr) {
-			return false, nil, physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerNetwork %q does not exist.", networkConfig.Name)
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("PhysicalContainerNetwork %q does not exist.", networkConfig.NetworkRef)
+			}
+			continue
 		}
 		if getErr != nil {
-			log.Error(getErr, "Failed to get PhysicalContainerNetwork", "NetworkRef", networkConfig.Name)
-			return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerNetwork %q: %v", networkConfig.Name, getErr)
+			log.Error(getErr, "Failed to get PhysicalContainerNetwork", "NetworkRef", networkConfig.NetworkRef)
+			dependencyErr = errors.Join(dependencyErr, fmt.Errorf("get PhysicalContainerNetwork %q: %w", networkConfig.NetworkRef, getErr))
+			continue
+		}
+		if network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed {
+			message := fmt.Sprintf("PhysicalContainerNetwork %q failed.", networkConfig.NetworkRef)
+			if ready := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
+				message = fmt.Sprintf("PhysicalContainerNetwork %q failed: %s: %s", networkConfig.NetworkRef, ready.Reason, ready.Message)
+			}
+			dependencyErr = errors.Join(dependencyErr, fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message))
+			continue
 		}
 		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
-			return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.Name)
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.NetworkRef)
+			}
+			continue
 		}
 		if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || network.Status.NetworkID == "" {
-			return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerNetwork %q is not ready.", networkConfig.Name)
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("PhysicalContainerNetwork %q is not ready.", networkConfig.NetworkRef)
+			}
+			continue
 		}
 
 		networks = append(networks, containers.CreateContainerNetworkOptions{
@@ -872,18 +1027,26 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 		})
 	}
 
-	return true, networks, physicalResourceProgressCompleted, ""
+	if dependencyErr != nil {
+		return false, nil, "", dependencyErr
+	}
+	if pendingMessage != "" {
+		return false, nil, pendingMessage, nil
+	}
+	return true, networks, "", nil
 }
 
 func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 	container *apiv2.PhysicalContainer,
 	currentData *physicalContainerData,
+	volumeMounts []containers.CreateContainerVolumeMount,
+	networks []containers.CreateContainerNetworkOptions,
 	log logr.Logger,
 ) objectChange {
 	stateKey := physicalContainerDataKey(container)
 	data := currentData.Clone()
 	data.state = physicalContainerStateCreate
-	data.progress = physicalResourceProgressInProgress
+	data.workInProgress = true
 	data.containerID = ""
 	data.failureMessage = ""
 	data.cleanupMessage = ""
@@ -894,12 +1057,26 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 	currentData.UpdateFrom(data)
 	containerSnapshot := container.DeepCopy()
 	dataSnapshot := data.Clone()
+	containerConfig := containerSnapshot.Spec.Container
+	createOptions := containers.CreateContainerOptions{
+		Name:         containerConfig.ContainerName,
+		Image:        dataSnapshot.image,
+		Entrypoint:   containerConfig.Entrypoint,
+		Command:      containerConfig.Command,
+		RunArgs:      containerConfig.RunArgs,
+		VolumeMounts: volumeMounts,
+		Ports:        physicalPortsToCreateContainerPorts(containerConfig.Ports),
+		Networks:     networks,
+		Env:          containerConfig.Env,
+		Labels:       physicalContainerCreationLabels(containerSnapshot, log),
+	}
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
-		r.createPhysicalContainer(operationCtx, containerSnapshot, stateKey, dataSnapshot, log)
+		r.createPhysicalContainer(operationCtx, containerSnapshot, stateKey, dataSnapshot, createOptions, log)
 	})
 	if enqueueErr != nil {
 		log.Error(enqueueErr, "Failed to queue PhysicalContainer create")
-		data.progress = physicalResourceProgressFailed
+		data.state = physicalContainerStateCreateFailed
+		data.workInProgress = false
 		data.failureMessage = fmt.Sprintf("Failed to queue physical container create: %v", enqueueErr)
 		currentData.UpdateFrom(data)
 		return noChange
@@ -914,6 +1091,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	container *apiv2.PhysicalContainer,
 	stateKey physicalContainerDataStateKey,
 	data *physicalContainerData,
+	createOptions containers.CreateContainerOptions,
 	log logr.Logger,
 ) {
 	containerConfig := container.Spec.Container
@@ -921,8 +1099,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		replaceErr := r.removePhysicalContainerForReplacement(ctx, containerConfig.ContainerName, log)
 		if replaceErr != nil {
 			log.Error(replaceErr, "Failed to replace existing physical container")
-			data.state = physicalContainerStateReplace
-			data.progress = physicalContainerOperationRetryPending
+			data.state = physicalContainerStateReplaceRetry
 			data.failureMessage = fmt.Sprintf("Failed to replace existing physical container: %v", replaceErr)
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			r.queuePhysicalContainerDataResult(container, stateKey, data)
@@ -930,42 +1107,32 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		}
 	}
 
-	containerID, createErr := r.orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:         containerConfig.ContainerName,
-		Image:        data.image,
-		Entrypoint:   containerConfig.Entrypoint,
-		Command:      containerConfig.Command,
-		VolumeMounts: data.volumeMounts,
-		Ports:        physicalPortsToCreateContainerPorts(containerConfig.Ports),
-		Networks:     data.networks,
-		Env:          containerConfig.Env,
-		Labels:       physicalContainerCreationLabels(container, log),
-	})
+	containerID, createErr := r.orchestrator.CreateContainer(ctx, createOptions)
 	if createErr != nil {
 		log.Error(createErr, "Failed to create physical container")
 		data.containerID = containerID
 		data.failureMessage = fmt.Sprintf("Failed to create physical container: %v", createErr)
 		if (errors.Is(createErr, containers.ErrAlreadyExists) && !containerConfig.ReplaceExisting) ||
 			errors.Is(createErr, containers.ErrCouldNotAllocate) {
-			data.state = physicalContainerStateCreate
-			data.progress = physicalContainerOperationFailed
+
+			data.state = physicalContainerStateCreateFailed
 			data.retryAfter = time.Time{}
 		} else {
-			data.state = physicalContainerStateCreate
-			data.progress = physicalContainerOperationRetryPending
+
+			data.state = physicalContainerStateCreateRetry
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 	} else if containerID == "" {
 		missingContainerIDErr := errors.New("physical container create succeeded without returning a runtime container ID")
 		log.Error(missingContainerIDErr, "Physical container create succeeded without returning a runtime container ID")
-		data.state = physicalContainerStateCreate
-		data.progress = physicalContainerOperationFailed
+
+		data.state = physicalContainerStateCreateFailed
 		data.failureMessage = "Physical container create succeeded without returning a runtime container ID."
 		data.retryAfter = time.Time{}
 	} else {
 		data.containerID = containerID
-		data.state = physicalContainerStateCreate
-		data.progress = physicalContainerOperationCompleted
+
+		data.state = physicalContainerStateCreated
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
 		r.runPhysicalContainerCleanupMonitor(container, containerID, log)
@@ -1054,7 +1221,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreateFiles(
 	stateKey := physicalContainerDataContainerIDKey(data.containerID)
 	scheduledData := data.Clone()
 	scheduledData.state = physicalContainerStateCopyFiles
-	scheduledData.progress = physicalContainerOperationInProgress
+	scheduledData.workInProgress = true
 	scheduledData.failureMessage = ""
 	if !r.containerData.Update(container.NamespacedName(), stateKey, scheduledData) {
 		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
@@ -1068,8 +1235,8 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreateFiles(
 		r.copyPhysicalContainerCreateFiles(operationCtx, containerSnapshot, stateKey, dataSnapshot, fileModTime, log)
 	})
 	if enqueueErr != nil {
-		data.state = physicalContainerStateCopyFiles
-		data.progress = physicalContainerOperationFailed
+		data.state = physicalContainerStateFileCopyFailed
+		data.workInProgress = false
 		data.failureMessage = fmt.Sprintf("Failed to queue physical container file copy: %v", enqueueErr)
 		log.Error(enqueueErr, "Failed to queue PhysicalContainer file copy", "ContainerID", data.containerID)
 		return noChange
@@ -1106,8 +1273,8 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 		copyErr := r.orchestrator.CreateFiles(ctx, createFilesOptions)
 		if copyErr != nil {
 			log.Error(copyErr, "Failed to copy files to physical container", "ContainerID", data.containerID, "Destination", createFileRequest.Destination)
-			data.state = physicalContainerStateCopyFiles
-			data.progress = physicalContainerOperationFailed
+
+			data.state = physicalContainerStateFileCopyFailed
 			data.failureMessage = fmt.Sprintf("Failed to copy files to physical container: %v", copyErr)
 			r.queuePhysicalContainerDataResult(container, stateKey, data)
 			return
@@ -1116,8 +1283,7 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 		log.V(1).Info("Files copied to the physical container", "ContainerID", data.containerID, "Destination", createFileRequest.Destination)
 	}
 
-	data.state = physicalContainerStateCopyFiles
-	data.progress = physicalContainerOperationCompleted
+	data.state = physicalContainerStateFilesCopied
 	data.failureMessage = ""
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
 }
@@ -1130,7 +1296,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerStart(
 	stateKey := physicalContainerDataContainerIDKey(data.containerID)
 	scheduledData := data.Clone()
 	scheduledData.state = physicalContainerStateStart
-	scheduledData.progress = physicalContainerOperationInProgress
+	scheduledData.workInProgress = true
 	scheduledData.failureMessage = ""
 	if !r.containerData.Update(container.NamespacedName(), stateKey, scheduledData) {
 		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
@@ -1143,26 +1309,14 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerStart(
 		r.startPhysicalContainer(operationCtx, containerSnapshot, stateKey, dataSnapshot, log)
 	})
 	if enqueueErr != nil {
-		data.state = physicalContainerStateStart
-		data.progress = physicalContainerOperationFailed
+		data.state = physicalContainerStateStartFailed
+		data.workInProgress = false
 		data.failureMessage = fmt.Sprintf("Failed to queue physical container start: %v", enqueueErr)
 		log.Error(enqueueErr, "Failed to queue PhysicalContainer start", "ContainerID", data.containerID)
 		return noChange
 	}
 
 	log.V(1).Info("Queued PhysicalContainer start", "ContainerID", data.containerID)
-	return setValue(&container.Status.ContainerID, data.containerID)
-}
-
-func (r *PhysicalContainerReconciler) skipPhysicalContainerStart(
-	container *apiv2.PhysicalContainer,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	data.state = physicalContainerStateStart
-	data.progress = physicalContainerOperationCompleted
-	data.failureMessage = ""
-	log.V(1).Info("Skipping PhysicalContainer start because stop is requested", "ContainerID", data.containerID)
 	return setValue(&container.Status.ContainerID, data.containerID)
 }
 
@@ -1178,12 +1332,12 @@ func (r *PhysicalContainerReconciler) startPhysicalContainer(
 	})
 	if startErr != nil {
 		log.Error(startErr, "Failed to start physical container", "ContainerID", data.containerID)
-		data.state = physicalContainerStateStart
-		data.progress = physicalContainerOperationFailed
+
+		data.state = physicalContainerStateStartFailed
 		data.failureMessage = fmt.Sprintf("Failed to start physical container: %v", startErr)
 	} else {
-		data.state = physicalContainerStateStart
-		data.progress = physicalContainerOperationCompleted
+
+		data.state = physicalContainerStateStarted
 		data.failureMessage = ""
 		r.runRetainedPhysicalContainerLifecycleMonitor(container, data.containerID, log)
 	}
@@ -1196,10 +1350,11 @@ func (r *PhysicalContainerReconciler) queuePhysicalContainerDataResult(
 	stateKey physicalContainerDataStateKey,
 	result *physicalContainerData,
 ) {
+	result.workInProgress = false
+
 	queued := r.containerData.QueueDeferredOpForStateKey(container.NamespacedName(), stateKey, func(name types.NamespacedName, currentStateKey physicalContainerDataStateKey, _ *apiv2.PhysicalContainer) {
 		newStateKey := currentStateKey
-		if result.state == physicalContainerStateCreate &&
-			result.progress == physicalContainerOperationCompleted &&
+		if result.state == physicalContainerStateCreated &&
 			result.containerID != "" {
 			newStateKey = physicalContainerDataContainerIDKey(result.containerID)
 		}
@@ -1207,8 +1362,7 @@ func (r *PhysicalContainerReconciler) queuePhysicalContainerDataResult(
 			owner, updated := r.containerData.UpdateChangingStateKeyIfUnclaimed(name, currentStateKey, newStateKey, result)
 			if !updated && owner != (types.NamespacedName{}) && owner != name {
 				conflictedResult := result.Clone()
-				conflictedResult.state = physicalContainerStateResolve
-				conflictedResult.progress = physicalResourceProgressRetryPending
+				conflictedResult.state = physicalContainerStateResolveRetry
 				conflictedResult.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
 				conflictedResult.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				_ = r.containerData.Update(name, currentStateKey, conflictedResult)
@@ -1292,7 +1446,7 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 		desiredConnections = make(map[string]apiv2.PhysicalContainerNetworkConnectionSpec, len(container.Spec.Container.Networks))
 		for i := range container.Spec.Container.Networks {
 			network := &container.Spec.Container.Networks[i]
-			networkName := commonapi.AsNamespacedName(network.Name, container.Namespace)
+			networkName := commonapi.AsNamespacedName(network.NetworkRef, container.Namespace)
 			desiredConnections[physicalContainerNetworkConnectionName(container, i)] = apiv2.PhysicalContainerNetworkConnectionSpec{
 				ContainerRef: container.Name,
 				NetworkRef:   networkName.Name,
@@ -1306,8 +1460,18 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 	existingNames := make(map[string]struct{}, len(connections.Items))
 	for i := range connections.Items {
 		connection := &connections.Items[i]
-		if _, expected := desiredConnections[connection.Name]; expected {
+		desired, expected := desiredConnections[connection.Name]
+		if !metav1.IsControlledBy(connection, container) {
+			if expected {
+				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q has a different owner", connection.NamespacedName()))
+			}
+			continue
+		}
+		if expected {
 			existingNames[connection.Name] = struct{}{}
+			if !connection.Spec.Equal(desired) || !connection.DeletionTimestamp.IsZero() {
+				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q has a different spec or is terminating", connection.NamespacedName()))
+			}
 			continue
 		}
 
@@ -1347,7 +1511,7 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 				continue
 			}
 			if !metav1.IsControlledBy(&existingConnection, container) ||
-				!existingConnection.Spec.Equal(connection.Spec) {
+				!existingConnection.Spec.Equal(connection.Spec) || !existingConnection.DeletionTimestamp.IsZero() {
 				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q already exists with a different owner or spec", connection.NamespacedName()))
 			}
 			continue
@@ -1368,16 +1532,40 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 	container *apiv2.PhysicalContainer,
 	data *physicalContainerData,
 	log logr.Logger,
-) objectChange {
-	if data.operationInProgress() {
-		log.V(1).Info("Physical container is being deleted while an operation is in progress", "State", data.state)
-		return additionalReconciliationNeeded
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		defer logger.ReleaseResourceLog(container.GetResourceId())
+		return deleteFinalizer(container, physicalContainerFinalizer, log), delay
 	}
-
+	defer func() {
+		if data != nil {
+			stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+			_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+			dataChange, projectionDelay, valid := data.applyTo(container)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid physical container state %v", data.state),
+					"PhysicalContainer reached invalid reconciliation state")
+			}
+		}
+	}()
 	connectionChange, connectionErr := r.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
 	if connectionErr != nil {
 		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections")
-		return connectionChange | additionalReconciliationNeeded
+		return connectionChange | additionalReconciliationNeeded, delay
+	}
+
+	if container.Spec.Container != nil &&
+		(data.state == physicalContainerStateCreateFailed || data.state == physicalContainerStateCreateRetry ||
+			data.state == physicalContainerStateReplaceRetry || data.state == physicalContainerStateCleanupFailed ||
+			data.state == physicalContainerStateCleanupRetry) {
+		cleanupChange, cleanupComplete := r.removePartiallyCreatedPhysicalContainer(ctx, container, data, log)
+		connectionChange |= cleanupChange
+		if !cleanupComplete {
+			return connectionChange, delay
+		}
 	}
 
 	containerID := data.containerID
@@ -1385,23 +1573,32 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 		containerID = container.Spec.ContainerID
 	}
 
-	if container.Spec.Container != nil && !container.Spec.Container.RetainRuntimeContainer && containerID != "" {
+	if container.Spec.Container != nil && !container.Spec.Container.RetainRuntimeContainer && containerID != "" &&
+		data.state != physicalContainerStateMissing {
 		_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 			Containers: []string{containerID},
 			Force:      true,
 		})
 		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
 			log.Error(removeErr, "Failed to remove runtime container", "ContainerID", containerID)
-			data.state = physicalContainerStateRemove
-			data.progress = physicalResourceProgressRetryPending
+			data.state = physicalContainerStateRemoveRetry
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Failed to remove runtime container: %v", removeErr)
-			return connectionChange | setValue(&container.Status.ContainerID, containerID) | additionalReconciliationNeeded
+			return connectionChange | setValue(&container.Status.ContainerID, containerID) | additionalReconciliationNeeded, delay
 		}
+		data.state = physicalContainerStateMissing
+		data.failureMessage, data.cleanupMessage = "", ""
+	}
+
+	dataChange, _, valid := data.applyTo(container)
+	if !valid || dataChange&statusChanged != 0 {
+		return connectionChange | dataChange | additionalReconciliationNeeded, delay
 	}
 
 	r.discardPhysicalContainerData(container.NamespacedName(), container.UID, data, log)
-	return connectionChange | deleteFinalizer(container, physicalContainerFinalizer, log)
+	data = nil
+	defer logger.ReleaseResourceLog(container.GetResourceId())
+	return connectionChange | deleteFinalizer(container, physicalContainerFinalizer, log), delay
 }
 
 func (r *PhysicalContainerReconciler) processContainerEvent(em containers.EventMessage) {
@@ -1489,6 +1686,23 @@ func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log log
 
 func applyInspectedPhysicalContainerDetails(container *apiv2.PhysicalContainer, inspectedContainer *containers.InspectedContainer, _ logr.Logger) objectChange {
 	change := noChange
+	if !std_slices.Equal(container.Status.EffectiveCommand, inspectedContainer.Command) {
+		container.Status.EffectiveCommand = std_slices.Clone(inspectedContainer.Command)
+		change |= statusChanged
+	}
+	if !std_slices.Equal(container.Status.EffectiveEntrypoint, inspectedContainer.Entrypoint) {
+		container.Status.EffectiveEntrypoint = std_slices.Clone(inspectedContainer.Entrypoint)
+		change |= statusChanged
+	}
+	var environment []commonapi.EnvVar
+	for name, value := range inspectedContainer.Env {
+		environment = append(environment, commonapi.EnvVar{Name: name, Value: value})
+	}
+	std_slices.SortFunc(environment, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
+	if !std_slices.Equal(container.Status.EffectiveEnv, environment) {
+		container.Status.EffectiveEnv = environment
+		change |= statusChanged
+	}
 	change |= setValue(&container.Status.ContainerID, inspectedContainer.Id)
 	change |= setValue(&container.Status.ContainerName, inspectedContainer.Name)
 	change |= setValue(&container.Status.RuntimeStatus, string(inspectedContainer.Status))
@@ -1506,25 +1720,9 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 	log logr.Logger,
 ) objectChange {
 	change := applyInspectedPhysicalContainerDetails(container, inspectedContainer, log)
-	data.state = physicalContainerStateRuntime
 	data.failureMessage = ""
-	switch inspectedContainer.Status {
-	case containers.ContainerStatusRunning:
-		data.progress = physicalResourceProgressRunning
-	case containers.ContainerStatusPaused:
-		data.progress = physicalResourceProgressPaused
-	case containers.ContainerStatusRestarting:
-		data.progress = physicalResourceProgressRestarting
-	case containers.ContainerStatusCreated:
-		data.progress = physicalResourceProgressCreated
-	case containers.ContainerStatusRemoving:
-		data.progress = physicalResourceProgressRemoving
-	case containers.ContainerStatusExited:
-		data.progress = physicalResourceProgressExited
-	case containers.ContainerStatusDead:
-		data.progress = physicalResourceProgressDead
-	default:
-		data.progress = physicalResourceProgressUnknown
+	data.state = physicalContainerRuntimeState(inspectedContainer.Status)
+	if data.state == physicalContainerStateUnknown {
 		data.failureMessage = fmt.Sprintf("Runtime container returned unrecognized status %q.", inspectedContainer.Status)
 	}
 

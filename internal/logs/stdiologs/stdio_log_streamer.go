@@ -145,14 +145,18 @@ func (sls stdIoLogStreamer) StreamLogs(
 	src = usvc_io.NewTimestampAwareReader(src, logs.ToTimestampReaderOptions(opts))
 
 	if !opts.Follow || resource.Done() {
-		defer logFile.Close()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer src.Close()
+			defer func() { _ = resiliency.MakePanicError(recover(), log) }()
 
-		_, copyErr := io.Copy(dest, src)
-		if copyErr != nil {
-			log.Error(copyErr, "Failed to copy log file to destination")
-		}
-
-		return apiv1.ResourceStreamStatusDone, nil, nil
+			_, copyErr := io.Copy(dest, src)
+			if copyErr != nil && requestCtx.Err() == nil {
+				log.Error(copyErr, "Failed to copy log file to destination")
+			}
+		}()
+		return apiv1.ResourceStreamStatusStreaming, done, nil
 	}
 
 	followWriter := usvc_io.NewFollowWriter(requestCtx, src, dest, usvc_io.WithCloseSourceOnCancel())

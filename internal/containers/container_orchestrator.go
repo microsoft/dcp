@@ -178,7 +178,13 @@ type InspectedContainer struct {
 	// Environment variables
 	Env map[string]string `json:"Env,omitempty"`
 
-	// Launch arguments
+	// Entrypoint reported by the runtime.
+	Entrypoint []string `json:"Entrypoint,omitempty"`
+
+	// Command reported by the runtime, separately from the entrypoint.
+	Command []string `json:"Command,omitempty"`
+
+	// Combined entrypoint and command arguments.
 	Args []string `json:"Args,omitempty"`
 
 	// Container volume/bind mounts
@@ -483,6 +489,10 @@ type ExecContainerOptions struct {
 
 type ExecContainers interface {
 	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
+	// Successful launch starts the attached runtime command, not necessarily the in-container process.
+	// Cancellation requests attached-session shutdown and does not guarantee host cleanup or in-container process termination.
+	// The completion channel emits once when the executor reports completion, then closes.
+	// Output drain is bounded; cleanup can remain unconfirmed and remaining output may be lost.
 	ExecContainer(ctx context.Context, options ExecContainerOptions) (<-chan int32, error)
 }
 
