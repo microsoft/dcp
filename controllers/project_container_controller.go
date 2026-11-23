@@ -57,8 +57,8 @@ var projectContainerDataHandlers = map[projectState]projectContainerDataHandlerF
 	projectStateExited:        handleProjectContainerExited,
 	projectStatePaused:        handleProjectContainerReady,
 	projectStateStopping:      handleProjectContainerStopping,
-	projectStateStopped:       handleProjectContainerStopped,
-	projectStateFailed:        handleProjectContainerFailed,
+	projectStateStopped:       handleProjectContainerTerminal,
+	projectStateFailed:        handleProjectContainerTerminal,
 	projectStateUnknown:       handleProjectContainerUnknown,
 	0:                         handleInvalidProjectContainerState,
 }
@@ -531,7 +531,8 @@ func (r *ProjectContainerReconciler) syncProjectEndpoints(
 		projectContainerOwnerUIDField, mappings, log)
 }
 
-func handleProjectContainerFailed(
+// handleProjectContainerTerminal observes retained backings of a Stopped or Failed Project without changing its outcome.
+func handleProjectContainerTerminal(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
@@ -542,7 +543,7 @@ func handleProjectContainerFailed(
 		_, observationChange, getErr := reconciler.observeProjectContainer(ctx, resource, &lookupData)
 		change |= observationChange
 		if getErr != nil {
-			log.Error(getErr, "Failed to observe failed Project container")
+			log.Error(getErr, "Failed to observe terminal Project container")
 		} else {
 			// Completion observed after failure is reported; the lookup copy keeps the failure diagnosis intact.
 			data.finishedAt, data.exitCode = lookupData.finishedAt, lookupData.exitCode
@@ -551,19 +552,11 @@ func handleProjectContainerFailed(
 	imageLookupData := *data
 	image, imageErr := reconciler.findProjectImage(ctx, resource, &imageLookupData)
 	if imageErr != nil {
-		log.Error(imageErr, "Failed to observe failed Project startup image")
+		log.Error(imageErr, "Failed to observe terminal Project startup image")
 	} else {
 		change |= applyProjectContainerImageLogs(resource, image)
 	}
 	return change
-}
-
-func handleProjectContainerStopped(
-	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
-	_ projectState, data *projectContainerData, log logr.Logger,
-) objectChange {
-	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	return reconciler.syncProjectEndpoints(ctx, resource, data, nil, log)
 }
 
 func handleProjectContainerUnknown(
@@ -890,15 +883,48 @@ func handleProjectContainerStopping(
 		return additionalReconciliationNeeded
 	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	cleaned, cleanupErr := reconciler.cleanupProjectBackings(ctx, resource, data, log)
-	if cleanupErr != nil {
-		return additionalReconciliationNeeded
+	if data.physicalUID == "" {
+		physical, getErr := reconciler.findProjectContainer(ctx, resource, data)
+		if getErr != nil {
+			log.Error(getErr, "Failed to observe stopping Project container")
+			return additionalReconciliationNeeded
+		}
+		if physical == nil {
+			data.state, data.message = projectStateStopped, "Stop was requested before a container was created."
+			return additionalReconciliationNeeded
+		}
 	}
-	if !cleaned {
-		return additionalReconciliationNeeded
+	// Like LogicalContainer, stop is forwarded to the retained backing; only Project deletion removes it.
+	physical, change, getErr := reconciler.observeProjectContainer(ctx, resource, data)
+	if getErr != nil {
+		log.Error(getErr, "Failed to observe stopping Project container")
+		return change | additionalReconciliationNeeded
 	}
-	data.state = projectStateStopped
-	return noChange
+	message := logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
+	switch physical.Status.Phase {
+	case apiv2.PhysicalContainerPhaseExited:
+		data.state, data.message = projectStateStopped, message
+		return change | additionalReconciliationNeeded
+	case apiv2.PhysicalContainerPhaseFailed:
+		data.failMissing(message)
+		return change | additionalReconciliationNeeded
+	}
+	return change | reconciler.requestBackingStop(ctx, physical, data, log)
+}
+
+func (r *ProjectContainerReconciler) requestBackingStop(
+	ctx context.Context, physical *apiv2.PhysicalContainer, data *projectContainerData, log logr.Logger,
+) objectChange {
+	if !physical.Spec.Stop {
+		patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+		update := physical.DeepCopy()
+		update.Spec.Stop = true
+		if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
+			log.Error(stopErr, "Failed to forward Project stop request")
+			data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
+		}
+	}
+	return additionalReconciliationNeeded
 }
 
 func projectContainerPhysicalName(resource *apiv2.ProjectContainer) string {

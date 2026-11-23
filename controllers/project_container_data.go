@@ -120,18 +120,12 @@ func (data *projectContainerData) applyTo(resource *apiv2.ProjectContainer) (obj
 		imageRef = data.imageName
 	}
 	change |= setValue(&resource.Status.ImageRef, imageRef)
-	if data.state == projectStateStopped {
-		source := &apiv2.LogSource{Name: physicalRef, UID: data.physicalUID, Complete: true}
+	// Retained backings publish their own capture state; a Project stopped before creating one has no runtime output.
+	if data.state == projectStateStopped && data.physicalUID == "" {
+		source := &apiv2.LogSource{Complete: true}
 		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 			resource.Status.RuntimeLogs = source
 			change |= statusChanged
-		}
-		if resource.Status.StartupLogs != nil {
-			startupSource := &apiv2.LogSource{Name: data.imageName, UID: data.imageUID, Complete: true}
-			if !reflect.DeepEqual(resource.Status.StartupLogs, startupSource) {
-				resource.Status.StartupLogs = startupSource
-				change |= statusChanged
-			}
 		}
 	}
 	commonChange, delay, valid := data.applyCommonTo(resource, projectContainerPortRequests(resource), false)

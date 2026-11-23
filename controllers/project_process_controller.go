@@ -549,12 +549,42 @@ func handleProjectProcessStopping(
 		return change | additionalReconciliationNeeded
 	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	cleaned, cleanupErr := reconciler.cleanupProjectProcesses(ctx, resource, data, log)
-	if cleanupErr != nil || !cleaned || change != noChange {
+	// Like LogicalProcess, stop is forwarded to the retained backing; only Project deletion removes it.
+	physical, lookupErr := reconciler.findProjectProcess(ctx, resource, data)
+	if lookupErr != nil {
+		log.Error(lookupErr, "Failed to observe stopping Project process")
 		return change | additionalReconciliationNeeded
 	}
-	data.state = projectStateStopped
-	return noChange
+	if physical == nil {
+		data.state, data.message = projectStateStopped, "Stop was requested before a process was created."
+		return change | additionalReconciliationNeeded
+	}
+	data.observePhysical(physical)
+	message := logicalBackingStatusMessage("PhysicalProcess", physical.Status.Conditions)
+	switch logicalProcessBackingState(physical) {
+	case logicalProcessStateExited:
+		data.state, data.message = projectStateStopped, message
+		return change | additionalReconciliationNeeded
+	case logicalProcessStateMissing, logicalProcessStateRuntimeFailed:
+		data.failMissing(message)
+		return change | additionalReconciliationNeeded
+	}
+	return change | reconciler.requestBackingStop(ctx, physical, data, log)
+}
+
+func (r *ProjectProcessReconciler) requestBackingStop(
+	ctx context.Context, physical *apiv2.PhysicalProcess, data *projectProcessData, log logr.Logger,
+) objectChange {
+	if !physical.Spec.Stop {
+		patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+		update := physical.DeepCopy()
+		update.Spec.Stop = true
+		if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
+			log.Error(stopErr, "Failed to forward Project stop request")
+			data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
+		}
+	}
+	return additionalReconciliationNeeded
 }
 
 func handleProjectProcessTerminal(
@@ -562,12 +592,12 @@ func handleProjectProcessTerminal(
 	_ projectState, data *projectProcessData, log logr.Logger,
 ) objectChange {
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	if data.physicalUID != "" && data.state == projectStateFailed {
+	if data.physicalUID != "" {
 		lookupData := data.Clone()
 		if physical, lookupErr := reconciler.findProjectProcess(ctx, resource, lookupData); lookupErr == nil && physical != nil {
 			data.observePhysical(physical)
 		} else if lookupErr != nil {
-			log.Error(lookupErr, "Failed to observe failed Project process backing")
+			log.Error(lookupErr, "Failed to observe terminal Project process backing")
 		}
 	}
 	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
@@ -657,9 +687,6 @@ func (data *projectProcessData) applyTo(resource *apiv2.ProjectProcess) (objectC
 		change |= setTimestamp(&resource.Status.IdentityTimestamp, data.physicalStatus.IdentityTimestamp)
 	}
 	source := data.runtimeLogs
-	if data.state == projectStateStopped && data.physicalUID != "" {
-		source = &apiv2.LogSource{Name: data.physicalName, UID: data.physicalUID, Complete: true}
-	}
 	if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 		resource.Status.RuntimeLogs = source.DeepCopy()
 		change |= statusChanged

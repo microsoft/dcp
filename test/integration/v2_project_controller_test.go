@@ -1051,8 +1051,8 @@ func TestV2ProjectContainerDirectExecutionWithRealOrchestrator(t *testing.T) {
 	})
 }
 
-// Verifies that direct Projects start by default and that stop cleans up their owned execution
-// without launching a replacement.
+// Verifies that direct Projects start by default, that stop forwards a graceful stop to the retained backing
+// without launching a replacement, and that Project deletion then removes the backing.
 func TestV2ProjectDirectDefaultStartAndStop(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -1071,10 +1071,16 @@ func TestV2ProjectDirectDefaultStartAndStop(t *testing.T) {
 				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 				stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
 				require.Equal(t, running.Status.PID, stopped.Status.PID)
-				ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
-				require.Len(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil), 1)
+				require.False(t, stopped.Status.FinishedAt.IsZero())
+				require.NoError(t, client.Get(ctx, ctrl_client.ObjectKeyFromObject(physical), physical))
+				require.True(t, physical.Spec.Stop)
+				require.Equal(t, apiv2.PhysicalProcessPhaseExited, physical.Status.Phase)
+				executions := testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil)
+				require.Len(t, executions, 1)
+				require.False(t, executions[0].Running())
 				require.NoError(t, client.Delete(ctx, resource))
 				ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
 				return
 			}
 			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
@@ -1088,10 +1094,18 @@ func TestV2ProjectDirectDefaultStartAndStop(t *testing.T) {
 			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 			stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
 			require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
-			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
-			waitContainerMissing(t, ctx, running.Status.ContainerID)
+			require.False(t, stopped.Status.FinishedAt.IsZero())
+			require.NoError(t, client.Get(ctx, ctrl_client.ObjectKeyFromObject(physical), physical))
+			require.True(t, physical.Spec.Stop)
+			require.Equal(t, apiv2.PhysicalContainerPhaseExited, physical.Status.Phase)
+			// The stopped runtime container is retained, like LogicalContainer's, until the Project is deleted.
+			inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{running.Status.ContainerID}})
+			require.NoError(t, inspectErr)
+			require.Equal(t, containers.ContainerStatusExited, inspected[0].Status)
 			require.NoError(t, client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+			waitContainerMissing(t, ctx, running.Status.ContainerID)
 		})
 	}
 }
