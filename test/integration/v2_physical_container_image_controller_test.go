@@ -7,11 +7,13 @@ package integration_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +47,117 @@ func (r *recordingBuildImageOrchestrator) BuildImage(ctx context.Context, option
 	default:
 	}
 	return r.ContainerOrchestrator.BuildImage(ctx, options)
+}
+
+type archiveBuildOrchestrator struct {
+	containers.ContainerOrchestrator
+	started   chan struct{}
+	cancelled chan struct{}
+	release   <-chan struct{}
+	fail      bool
+}
+
+func (orchestrator *archiveBuildOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	close(orchestrator.started)
+	select {
+	case <-ctx.Done():
+		close(orchestrator.cancelled)
+		<-orchestrator.release
+		return ctx.Err()
+	case <-orchestrator.release:
+	}
+	if orchestrator.fail {
+		return errors.New("injected archive image build failure")
+	}
+	return orchestrator.ContainerOrchestrator.BuildImage(ctx, options)
+}
+
+// Verifies that PhysicalContainerImage owns an opted-in archive through acquisition and removes it
+// after completion, terminal failure, or settled deletion, while retaining caller-owned archives.
+func TestV2PhysicalContainerImageControllerArchiveOwnership(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		remove      bool
+		failBuild   bool
+		deleteEarly bool
+	}{
+		{name: "owned", remove: true},
+		{name: "caller-owned"},
+		{name: "failed", remove: true, failBuild: true},
+		{name: "deleted-during-build", remove: true, deleteEarly: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			buildRelease := make(chan struct{})
+			releaseBuild := sync.OnceFunc(func() { close(buildRelease) })
+			defer releaseBuild()
+			var orchestrator *archiveBuildOrchestrator
+			server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalContainerImageController, t.Name(), t.TempDir(), TestEnvironmentOptions{
+				DecorateContainerOrchestrator: func(inner containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
+					orchestrator = &archiveBuildOrchestrator{ContainerOrchestrator: inner, started: make(chan struct{}),
+						cancelled: make(chan struct{}), release: buildRelease, fail: scenario.failBuild}
+					return orchestrator
+				},
+			})
+			require.NoError(t, startErr)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "archive-ownership"}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+			})
+			contents := make([]byte, 1024)
+			archivePath := filepath.Join(t.TempDir(), "context.tar")
+			require.NoError(t, usvc_io.WriteFile(archivePath, contents, osutil.PermissionOnlyOwnerReadWrite))
+			image := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerImageSpec{RemoveBuildContextArchive: scenario.remove, Image: &apiv2.PhysicalContainerImageConfig{
+					Image: "archive-target", Build: &apiv2.ContainerBuildContext{ContextArchive: &apiv2.ContainerBuildContextArchive{
+						Source: archivePath, SHA256: fmt.Sprintf("%x", sha256.Sum256(contents)),
+					}},
+				}},
+			}
+			require.NoError(t, server.Client.Create(ctx, image))
+			select {
+			case <-orchestrator.started:
+			case <-ctx.Done():
+				t.Fatal("image build did not start")
+			}
+			require.FileExists(t, archivePath)
+			if scenario.deleteEarly {
+				require.NoError(t, server.Client.Delete(ctx, image))
+				select {
+				case <-orchestrator.cancelled:
+				case <-ctx.Done():
+					t.Fatal("image build was not cancelled")
+				}
+				require.FileExists(t, archivePath, "acquisition must settle before archive cleanup")
+			}
+			releaseBuild()
+			if !scenario.deleteEarly {
+				expectedPhase := apiv2.PhysicalContainerImagePhaseReady
+				if scenario.failBuild {
+					expectedPhase = apiv2.PhysicalContainerImagePhaseFailed
+				}
+				waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					_, statErr := os.Stat(archivePath)
+					if statErr != nil && !os.IsNotExist(statErr) {
+						return false, statErr
+					}
+					return current.Status.Phase == expectedPhase &&
+						(!scenario.remove || os.IsNotExist(statErr)), nil
+				})
+				require.NoError(t, server.Client.Delete(ctx, image))
+			}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+			if scenario.remove {
+				require.NoFileExists(t, archivePath)
+			} else {
+				require.FileExists(t, archivePath)
+			}
+		})
+	}
 }
 
 // Verifies that PhysicalContainerImage builds raw archive inputs and releases its system-log writer on deletion.
@@ -212,7 +325,7 @@ func TestV2PhysicalContainerImageControllerCoordinatesTagAcquisition(t *testing.
 }
 
 // Verifies that PhysicalContainerImage lease contenders requeue without blocking unrelated pulls
-// or builds, remain pending without consuming pull retries, and complete after the lease is released.
+// or builds, retain owned archives without consuming pull retries, and complete with archive cleanup after lease release.
 func TestV2PhysicalContainerImageControllerRequeuesLeaseContenders(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"pull", "build"} {
@@ -246,8 +359,15 @@ func TestV2PhysicalContainerImageControllerRequeuesLeaseContenders(t *testing.T)
 				if mode == "build" {
 					reason = apiv2.PhysicalContainerImageReasonBuilding
 					contender.Spec.Image.Image = fmt.Sprintf("%s-target-%d", namespace.Name, index)
+					contents := make([]byte, 1024)
+					archivePath := filepath.Join(t.TempDir(), "context.tar")
+					require.NoError(t, usvc_io.WriteFile(archivePath, contents, osutil.PermissionOnlyOwnerReadWrite))
+					contender.Spec.RemoveBuildContextArchive = true
 					contender.Spec.Image.Build = &apiv2.ContainerBuildContext{
-						Context: "test-context", BaseImages: []string{source},
+						BaseImages: []string{source},
+						ContextArchive: &apiv2.ContainerBuildContextArchive{
+							Source: archivePath, SHA256: fmt.Sprintf("%x", sha256.Sum256(contents)),
+						},
 					}
 				}
 				require.NoError(t, client.Create(ctx, contender))
@@ -285,12 +405,18 @@ func TestV2PhysicalContainerImageControllerRequeuesLeaseContenders(t *testing.T)
 						condition != nil && condition.Message == "Waiting for image pull lease.", nil
 				})
 				require.False(t, waiting.Status.LogsComplete)
+				if mode == "build" {
+					require.FileExists(t, contender.Spec.Image.Build.ContextArchive.Source)
+				}
 			}
 			require.Equal(t, 1, containerOrchestrator.PullImageCallCount(source))
 			releasePull()
 			waitPhysicalContainerImagePhase(t, ctx, holder.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
 			for _, contender := range contenders {
 				waitPhysicalContainerImagePhase(t, ctx, contender.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+				if mode == "build" {
+					require.NoFileExists(t, contender.Spec.Image.Build.ContextArchive.Source)
+				}
 			}
 		})
 	}
@@ -739,6 +865,8 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
 }
 
+// Verifies that PhysicalContainerImage reuses matching build inputs, rebuilds changed inputs,
+// and removes an owned archive even when the existing build output is reused.
 func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -782,6 +910,22 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 	fourthImage := createImage("fourth-build-image", "context-v2", "ZGlmZmVyZW50", "label-v2")
 	require.NotEqual(t, thirdImage.Status.ImageID, fourthImage.Status.ImageID)
 	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	contents := make([]byte, 1024)
+	archivePath := filepath.Join(t.TempDir(), "context.tar")
+	require.NoError(t, usvc_io.WriteFile(archivePath, contents, osutil.PermissionOnlyOwnerReadWrite))
+	ownedImage := fourthImage.DeepCopy()
+	ownedImage.ObjectMeta = metav1.ObjectMeta{Name: "owned-archive", Namespace: namespace.Name}
+	ownedImage.Status = apiv2.PhysicalContainerImageStatus{}
+	ownedImage.Spec.RemoveBuildContextArchive = true
+	ownedImage.Spec.Image.Build.ContextArchive = &apiv2.ContainerBuildContextArchive{
+		Source: archivePath, SHA256: fmt.Sprintf("%x", sha256.Sum256(contents)),
+	}
+	require.NoError(t, client.Create(ctx, ownedImage))
+	reusedImage := waitPhysicalContainerImagePhase(t, ctx, ownedImage.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, fourthImage.Status.ImageID, reusedImage.Status.ImageID)
+	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.NoFileExists(t, archivePath)
 }
 
 func TestV2PhysicalContainerImageControllerRebuildsWhenInheritedBuildInputsChange(t *testing.T) {

@@ -662,34 +662,13 @@ func (r *LogicalContainerReconciler) createPhysicalContainerImage(
 		ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace},
 		Spec:       apiv2.PhysicalContainerImageSpec{Image: container.Spec.Container.Image.DeepCopy()},
 	}
-	InitializeLogicalBackingFinalizers(image, physicalContainerImageFinalizer)
-	ownerErr := ctrl.SetControllerReference(container, image, r.Scheme())
-	if ownerErr != nil {
-		return nil, fmt.Errorf("set physical image owner: %w", ownerErr)
-	}
-	data.unobservedChildren.recordCreateAttempt(image)
-	createErr := r.Create(ctx, image)
-	if image.UID != "" {
-		data.physicalImageUID = image.UID
-	}
-	if createErr != nil {
-		if !apierrors.IsAlreadyExists(createErr) {
-			return image, createErr
-		}
-		existing := &apiv2.PhysicalContainerImage{}
-		if lookupErr := r.NoCacheClient.Get(ctx, image.NamespacedName(), existing); lookupErr != nil {
-			return image, fmt.Errorf("get existing physical image: %w", lookupErr)
-		}
-		if identityErr := validatePhysicalResourceIdentity(container, existing, data.physicalImageUID); identityErr != nil {
-			return nil, fmt.Errorf("%v: %w", identityErr, createErr)
-		}
-		if !reflect.DeepEqual(existing.Spec, image.Spec) {
-			return nil, fmt.Errorf("physical image %q has a different spec: %w", existing.NamespacedName(), createErr)
-		}
-		data.physicalImageUID = existing.UID
-		return existing, nil
-	}
-	return image, nil
+	return createLogicalBacking(ctx, r.Client, r.NoCacheClient, container, image, physicalContainerImageFinalizer,
+		&data.physicalImageUID, &data.unobservedChildren, func(existing *apiv2.PhysicalContainerImage) error {
+			if !reflect.DeepEqual(existing.Spec, image.Spec) {
+				return fmt.Errorf("physical image %q has a different spec", existing.NamespacedName())
+			}
+			return nil
+		})
 }
 
 // createPhysicalContainer declares the physical resource and validates AlreadyExists collisions.
@@ -700,27 +679,10 @@ func (r *LogicalContainerReconciler) createPhysicalContainer(
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(container.UID), Namespace: container.Namespace},
 		Spec:       spec,
 	}
-	InitializeLogicalBackingFinalizers(physical, physicalContainerFinalizer)
-	ownerErr := ctrl.SetControllerReference(container, physical, r.Scheme())
-	if ownerErr != nil {
-		return nil, fmt.Errorf("set physical container owner: %w", ownerErr)
-	}
-	data.unobservedChildren.recordCreateAttempt(physical)
-	createErr := r.Create(ctx, physical)
-	if physical.UID != "" {
-		data.physicalContainerUID = physical.UID
-	}
-	if createErr != nil {
-		if !apierrors.IsAlreadyExists(createErr) {
-			return physical, createErr
-		}
-		existing := &apiv2.PhysicalContainer{}
-		if lookupErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), existing); lookupErr != nil {
-			return physical, fmt.Errorf("get existing physical container: %w", lookupErr)
-		}
-		if identityErr := validatePhysicalResourceIdentity(container, existing, data.physicalContainerUID); identityErr != nil {
-			return nil, fmt.Errorf("%v: %w", identityErr, createErr)
-		}
+	declared, declarationErr := createLogicalBacking(ctx, r.Client, r.NoCacheClient, container, physical, physicalContainerFinalizer,
+		&data.physicalContainerUID, &data.unobservedChildren, nil)
+	if declarationErr == nil && declared != physical {
+		existing := declared
 		if existing.Spec.Container != nil {
 			data.effectiveCommand = std_slices.Clone(existing.Spec.Container.Command)
 			data.effectiveEnv = std_slices.Clone(existing.Spec.Container.Env)
@@ -740,10 +702,8 @@ func (r *LogicalContainerReconciler) createPhysicalContainer(
 				}
 			}
 		}
-		data.physicalContainerUID = existing.UID
-		return existing, nil
 	}
-	return physical, nil
+	return declared, declarationErr
 }
 
 func (r *LogicalContainerReconciler) findPhysicalContainer(

@@ -84,6 +84,8 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
 	case *apiv2.LogicalContainerNetwork:
 		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
+	case *apiv2.LogicalContainerTunnelProxy:
+		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
 	}
 	provider, supported := obj.(logSourceProvider)
 	if !supported {
@@ -150,6 +152,10 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	case *apiv2.PhysicalContainerNetwork, *apiv2.LogicalContainerNetwork:
 		if opts.Source != string(apiv2.LogStreamSourceSystem) {
 			return apierrors.NewBadRequest("network log source must be system")
+		}
+	case *apiv2.LogicalContainerTunnelProxy:
+		if opts.Source != string(apiv2.LogStreamSourceSystem) {
+			return apierrors.NewBadRequest("tunnel proxy log source must be system")
 		}
 	}
 	startup := opts.Source == string(apiv2.LogStreamSourceStartupStdout) || opts.Source == string(apiv2.LogStreamSourceStartupStderr)

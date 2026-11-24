@@ -7,9 +7,11 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,6 +21,72 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type logicalBackingCreateErrorClient struct {
+	ctrl_client.Client
+	creationErr error
+	calls       int
+}
+
+func (client *logicalBackingCreateErrorClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	client.calls++
+	if client.creationErr != nil {
+		return client.creationErr
+	}
+	return client.Client.Create(ctx, object, options...)
+}
+
+// Verifies that shared backing declaration performs one Create, never reads after an ordinary create error,
+// and validates an existing resource only after AlreadyExists, preserving the original logical-container flow.
+func TestCreateLogicalBackingPreservesCreationFlow(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"success", "ordinary-error", "already-exists"} {
+		t.Run(scenario, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiv2.AddToScheme(scheme))
+			owner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "test", UID: "owner-uid"}}
+			desired := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: owner.Namespace}}
+			existing := desired.DeepCopy()
+			existing.UID = "committed-image"
+			existing.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(owner, apiv2.GroupVersion.WithKind("LogicalContainer"))}
+			InitializeLogicalBackingFinalizers(existing, physicalContainerImageFinalizer)
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if scenario != "success" {
+				builder = builder.WithObjects(existing)
+			}
+			client := &logicalBackingCreateErrorClient{Client: builder.Build()}
+			injectedErr := errors.New("uncertain create outcome")
+			if scenario == "ordinary-error" {
+				client.creationErr = injectedErr
+			}
+			reader := &logicalChildConfirmationReader{Reader: client}
+			var pending unobservedLogicalChildren
+			var uid types.UID
+			validated := false
+			declared, declarationErr := createLogicalBacking(t.Context(), client, reader, owner, desired, physicalContainerImageFinalizer,
+				&uid, &pending, func(*apiv2.PhysicalContainerImage) error { validated = true; return nil })
+			require.Equal(t, 1, client.calls)
+			require.Len(t, pending, 1)
+			if scenario == "already-exists" {
+				require.NoError(t, declarationErr)
+				require.Len(t, reader.calls, 1)
+				require.True(t, validated)
+				require.Equal(t, existing.UID, uid)
+				require.NotSame(t, desired, declared)
+			} else {
+				require.Empty(t, reader.calls)
+				require.False(t, validated)
+				require.Same(t, desired, declared)
+				if scenario == "ordinary-error" {
+					require.ErrorIs(t, declarationErr, injectedErr)
+					require.False(t, apierrors.IsAlreadyExists(declarationErr))
+				} else {
+					require.NoError(t, declarationErr)
+				}
+			}
+		})
+	}
+}
 
 type logicalChildConfirmationReader struct {
 	ctrl_client.Reader

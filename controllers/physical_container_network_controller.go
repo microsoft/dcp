@@ -215,16 +215,7 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 	}
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, network.GetResourceId())
-	if owner := metav1.GetControllerOf(&network); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainerNetwork" && owner.UID != "" {
-		logicalOwner := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
-		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical network system log stream")
-		} else {
-			log = forwardedLog
-		}
-	}
+	log = withOwnerResourceLog(log, &network, r.Scheme())
 
 	r.networkData.RunDeferredOps(req.NamespacedName, &network)
 	_, data := r.networkData.BorrowByNamespacedName(network.NamespacedName())
