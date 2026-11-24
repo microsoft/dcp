@@ -6,15 +6,17 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 
 	"github.com/go-logr/logr"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
-func removeContainerCopySources(config *apiv2.PhysicalContainerConfig, log logr.Logger) {
+func removeContainerCopySources(ctx context.Context, config *apiv2.PhysicalContainerConfig, log logr.Logger) {
 	if config == nil {
 		return
 	}
@@ -22,11 +24,13 @@ func removeContainerCopySources(config *apiv2.PhysicalContainerConfig, log logr.
 		if !copyContext.DeleteAfterCopy || copyContext.Source == "" {
 			continue
 		}
-		removeCopyArchive(copyContext.Source, log)
+		removeCopyArchive(ctx, copyContext.Source, copyContext.SHA256, log)
 	}
 }
 
-func removeCopyArchive(source string, log logr.Logger) {
+// removeCopyArchive removes a copied archive only while it still has its declared content, so a different file later
+// written at the same path is not deleted.
+func removeCopyArchive(ctx context.Context, source string, expectedSHA256 string, log logr.Logger) {
 	info, inspectErr := os.Lstat(source)
 	if errors.Is(inspectErr, os.ErrNotExist) {
 		return
@@ -37,6 +41,15 @@ func removeCopyArchive(source string, log logr.Logger) {
 	}
 	if info.IsDir() {
 		log.Error(fmt.Errorf("copy archive source is a directory"), "Refusing to remove directory as copy archive", "Source", source)
+		return
+	}
+	archive, verifyErr := usvc_io.OpenSHA256VerifiedFile(ctx, source, expectedSHA256)
+	if verifyErr != nil {
+		log.V(1).Info("Retaining copy archive that no longer matches its declared content", "Source", source, "Reason", verifyErr.Error())
+		return
+	}
+	if closeErr := archive.Close(); closeErr != nil {
+		log.Error(closeErr, "Failed to close copy archive before removal", "Source", source)
 		return
 	}
 	if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {

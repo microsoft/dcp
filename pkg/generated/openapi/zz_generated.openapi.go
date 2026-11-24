@@ -4512,7 +4512,7 @@ func schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref common.ReferenceCa
 					},
 					"deleteAfterCopy": {
 						SchemaProps: spec.SchemaProps{
-							Description: "DeleteAfterCopy deletes Source after copying or terminal failure, including stop/deletion. The file is retained while an operation is outstanding or a retry remains possible.",
+							Description: "DeleteAfterCopy deletes Source after copying or terminal failure, including stop/deletion. The file is retained while an operation is outstanding or a retry remains possible. DCP owns cleanup of Source until the container is deleted, so callers must not reuse the path before then; a file at Source that no longer matches SHA256 is left in place.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

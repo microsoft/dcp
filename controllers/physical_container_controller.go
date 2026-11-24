@@ -359,7 +359,7 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	initializer := getStateInitializer(physicalContainerDataInitializers, data.state, log)
 	change := initializer(ctx, r, container, data.state, data, log)
 	if !data.workInProgress && (container.Spec.Stop || physicalContainerArchiveCleanupRequired(data.state)) {
-		removeContainerCopySources(container.Spec.Container, log)
+		removeContainerCopySources(ctx, container.Spec.Container, log)
 	}
 	stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
@@ -1323,7 +1323,7 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 	log logr.Logger,
 ) {
 	defer func() {
-		removeContainerCopySources(container.Spec.Container, log)
+		removeContainerCopySources(ctx, container.Spec.Container, log)
 		r.queuePhysicalContainerDataResult(container, stateKey, data)
 	}()
 	for _, createFileRequest := range container.Spec.Container.CreateFiles {
@@ -1641,7 +1641,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 	log logr.Logger,
 ) (change objectChange, delay AdditionalReconciliationDelay) {
 	delay = StandardDelay
-	removeContainerCopySources(container.Spec.Container, log)
+	removeContainerCopySources(ctx, container.Spec.Container, log)
 	if data == nil {
 		defer logger.ReleaseResourceLog(container.GetResourceId())
 		return deleteFinalizer(container, physicalContainerFinalizer, log), delay

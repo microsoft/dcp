@@ -21,6 +21,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -107,11 +109,12 @@ func (orchestrator *archiveCopyOrchestrator) CopyFiles(ctx context.Context, opti
 	return orchestrator.ContainerOrchestrator.CopyFiles(ctx, options)
 }
 
-// Verifies that PhysicalContainer copies verified file and inline archives before startup,
-// deletes opted-in sources on success or terminal failure, and retains caller-owned sources.
+// Verifies that PhysicalContainer copies verified file and inline archives before startup, deletes opted-in sources
+// on success or terminal failure, and retains caller-owned sources and files that do not match the declared SHA256,
+// including a different file later written at an already-cleaned-up source path.
 func TestV2PhysicalContainerCopyArchives(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"owned", "retained", "inline", "hash-failure", "copy-failure", "create-failure", "failure-retained", "early-stop", "already-gone"} {
+	for _, scenario := range []string{"owned", "retained", "inline", "hash-failure", "copy-failure", "create-failure", "failure-retained", "early-stop", "already-gone", "replaced"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -171,7 +174,9 @@ func TestV2PhysicalContainerCopyArchives(t *testing.T) {
 					require.Equal(t, buffer.Bytes(), copied[0].Tar.Bytes())
 				}
 			}
-			if copyContext.DeleteAfterCopy {
+			// A source that never matched its declared SHA256 is not provably the archive DCP was asked to clean up.
+			removed := copyContext.DeleteAfterCopy && scenario != "hash-failure"
+			if removed {
 				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.PhysicalContainer) (bool, error) {
 					_, statErr := os.Stat(source)
 					return os.IsNotExist(statErr), nil
@@ -179,9 +184,16 @@ func TestV2PhysicalContainerCopyArchives(t *testing.T) {
 			} else {
 				require.FileExists(t, source)
 			}
+			if scenario == "replaced" {
+				require.NoError(t, usvc_io.WriteFile(source, []byte("unrelated replacement"), 0600))
+				require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerPhaseExited, nil
+				})
+			}
 			require.NoError(t, server.Client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
-			if !copyContext.DeleteAfterCopy {
+			if !removed || scenario == "replaced" {
 				require.FileExists(t, source)
 			}
 		})
