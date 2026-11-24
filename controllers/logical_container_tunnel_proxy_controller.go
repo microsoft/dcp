@@ -116,6 +116,7 @@ func NewLogicalContainerTunnelProxyReconciler(
 	if config.ControlStartupTimeout <= 0 {
 		config.ControlStartupTimeout = defaultControlStartupTimeout
 	}
+
 	return &LogicalContainerTunnelProxyReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv2.LogicalContainerTunnelProxy](client, reader, log, ctx),
 		config:         config, proxies: NewObjectStateMap[types.UID, logicalTunnelProxyData, *logicalTunnelProxyData, *apiv2.LogicalContainerTunnelProxy](),
@@ -135,6 +136,7 @@ func (r *LogicalContainerTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manage
 	})); shutdownErr != nil {
 		return fmt.Errorf("add logical tunnel security cleanup: %w", shutdownErr)
 	}
+
 	for _, child := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.ServiceEndpoint{}} {
 		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, child, logicalTunnelProxyOwnerUIDField, func(object ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(object)
@@ -147,6 +149,7 @@ func (r *LogicalContainerTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manage
 			return fmt.Errorf("index tunnel proxy child owner: %w", indexErr)
 		}
 	}
+
 	for field, extractor := range map[string]ctrl_client.IndexerFunc{
 		logicalTunnelProxyNetworkField: func(object ctrl_client.Object) []string {
 			proxy := object.(*apiv2.LogicalContainerTunnelProxy)
@@ -167,6 +170,7 @@ func (r *LogicalContainerTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manage
 			return fmt.Errorf("index tunnel proxy reference: %w", indexErr)
 		}
 	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.LogicalContainerTunnelProxy{}).
@@ -188,6 +192,7 @@ func (r *LogicalContainerTunnelProxyReconciler) mapTunnelProxyDependency(field s
 			r.Log.Error(listErr, "Failed to list tunnel proxies referencing dependency")
 			return nil
 		}
+
 		var requests []reconcile.Request
 		for _, proxy := range proxies.Items {
 			requests = append(requests, reconcile.Request{NamespacedName: proxy.NamespacedName()})
@@ -214,9 +219,11 @@ func (r *LogicalContainerTunnelProxyReconciler) Reconcile(ctx context.Context, r
 				log.Error(discardErr, "Failed to discard logical tunnel proxy state")
 				return ctrl.Result{}, discardErr
 			}
+
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
+
 		log.Error(getErr, "Failed to Get() the LogicalContainerTunnelProxy")
 		getFailedCounter.Add(ctx, 1)
 		return ctrl.Result{}, getErr
@@ -274,13 +281,16 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnelProxy(
 		data = &logicalTunnelProxyData{state: logicalTunnelProxyPending, tunnels: make(map[string]logicalTunnelRecord)}
 		r.proxies.Store(proxy.NamespacedName(), proxy.UID, data.Clone())
 	}
+
 	stateHandler := getStateInitializer(logicalTunnelProxyHandlers, data.state, log)
 	change := stateHandler(ctx, r, proxy, data.state, data, log)
 	_ = r.proxies.Update(proxy.NamespacedName(), proxy.UID, data)
+
 	projectionChange, delay, valid := data.applyTo(proxy)
 	if !valid {
 		log.Error(fmt.Errorf("invalid logical tunnel proxy state %v", data.state), "LogicalContainerTunnelProxy reached invalid reconciliation state")
 	}
+
 	return change | projectionChange, delay
 }
 
@@ -295,9 +305,11 @@ func (r *LogicalContainerTunnelProxyReconciler) discardLogicalTunnelProxyData(na
 	if removeErr := r.securityFiles.Remove(data.clientSecurityFile); removeErr != nil {
 		return removeErr
 	}
+
 	r.proxies.DeleteByNamespacedName(name)
 	r.abandonLogicalTunnelServer(data.server, r.Log.WithValues("LogicalContainerTunnelProxy", name))
 	logger.ReleaseResourceLog((&apiv2.LogicalContainerTunnelProxy{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
+
 	return nil
 }
 
@@ -310,15 +322,19 @@ func handleLogicalTunnelProxyPending(
 	if image == nil {
 		return change
 	}
+
 	container, ensureChange := r.ensurePhysicalContainer(ctx, proxy, data, image.GetName(), log)
 	change |= ensureChange
 	if container == nil {
 		return change
 	}
+
 	if !r.ensureLogicalTunnelServer(proxy, data, container, log) {
 		return change | additionalReconciliationNeeded
 	}
+
 	data.state, data.reason, data.message = logicalTunnelProxyStarting, "", ""
+
 	return change
 }
 
@@ -331,16 +347,21 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 		log.Error(imageErr, "Failed to get pending tunnel image")
 		return nil, additionalReconciliationNeeded
 	}
+
 	change := applyLogicalTunnelProxyImageStatus(proxy, image)
-	if image == nil && (data.imageUID != "" || data.containerUID != "") {
-		data.message = "Waiting to observe the owned PhysicalContainerImage."
-		return nil, change | additionalReconciliationNeeded
-	}
 	if image == nil {
+		if data.imageUID != "" || data.containerUID != "" {
+			// We haven't observed the image status yet, we need to try again in a later
+			// reconciliation pass
+			data.message = "Waiting to observe the owned PhysicalContainerImage."
+			return nil, change | additionalReconciliationNeeded
+		}
+
 		baseImage := proxy.Spec.BaseImage
 		if baseImage == "" {
 			baseImage = dcptun.DefaultBaseImage
 		}
+
 		if data.imageBuildPlan == nil {
 			plan, planErr := dcptun.PrepareClientProxyImageBuild(ctx, r.config.BuildContextDir, baseImage)
 			if planErr != nil {
@@ -349,6 +370,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 			}
 			data.imageBuildPlan = &plan
 		}
+
 		plan := data.imageBuildPlan
 		desiredImage := &apiv2.PhysicalContainerImage{
 			ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
@@ -358,6 +380,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 					ContextArchive: &apiv2.ContainerBuildContextArchive{Source: plan.BuildContextArchive.Source, SHA256: plan.BuildContextArchive.SHA256}},
 			}},
 		}
+
 		createdImage, createErr := createLogicalBacking(ctx, r.Client, r.NoCacheClient, proxy, desiredImage, physicalContainerImageFinalizer,
 			&data.imageUID, &data.unobservedChildren, func(existing *apiv2.PhysicalContainerImage) error {
 				expected := desiredImage.Spec.DeepCopy()
@@ -365,9 +388,11 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 					// The generated archive's path and tar timestamps are transport details, not build identity.
 					expected.Image.Build.ContextArchive = existing.Spec.Image.Build.ContextArchive
 				}
+
 				if !reflect.DeepEqual(*expected, existing.Spec) {
 					return fmt.Errorf("physical image %q has a different spec", existing.NamespacedName())
 				}
+
 				return nil
 			})
 		if createErr != nil {
@@ -377,13 +402,16 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 			}
 			return nil, change | additionalReconciliationNeeded
 		}
+
 		image = createdImage
 		change |= applyLogicalTunnelProxyImageStatus(proxy, image)
 	}
+
 	if data.imageUID == "" {
 		data.message = "Waiting to observe the owned PhysicalContainerImage."
 		return nil, change | additionalReconciliationNeeded
 	}
+
 	if data.imageBuildPlan != nil {
 		archive := image.Spec.Image.Build.ContextArchive
 		if archive != nil && archive.Source == data.imageBuildPlan.BuildContextArchive.Source {
@@ -395,6 +423,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 			return nil, change | additionalReconciliationNeeded
 		}
 	}
+
 	return image, change
 }
 
@@ -402,11 +431,15 @@ func removeLogicalTunnelProxyBuildContext(data *logicalTunnelProxyData) error {
 	if data.imageBuildPlan == nil {
 		return nil
 	}
+
 	source := data.imageBuildPlan.BuildContextArchive.Source
+
 	if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		return fmt.Errorf("remove tunnel image build context %q: %w", source, removeErr)
 	}
+
 	data.imageBuildPlan = nil
+
 	return nil
 }
 
@@ -419,12 +452,17 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 		log.Error(containerErr, "Failed to get pending tunnel container")
 		return nil, additionalReconciliationNeeded
 	}
+
 	change := applyLogicalTunnelProxyContainerStatus(proxy, container)
-	if container == nil && data.containerUID != "" {
-		data.message = "Waiting to observe the owned PhysicalContainer."
-		return nil, change | additionalReconciliationNeeded
-	}
+
 	if container == nil {
+		if data.containerUID != "" {
+			// We're still waiting to observe the physical container status. We need to wait and
+			// check again in a later reconciliation pass
+			data.message = "Waiting to observe the owned PhysicalContainer."
+			return nil, change | additionalReconciliationNeeded
+		}
+
 		network := &apiv2.LogicalContainerNetwork{}
 		networkName := commonapi.AsNamespacedName(proxy.Spec.NetworkRef, proxy.Namespace)
 		networkErr := r.Get(ctx, networkName, network)
@@ -433,9 +471,11 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 				data.message = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)
 				return nil, change
 			}
+
 			log.Error(networkErr, "Failed to read tunnel proxy logical network")
 			return nil, change | additionalReconciliationNeeded
 		}
+
 		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
 			data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart,
 				fmt.Sprintf("LogicalContainerNetwork %q failed: %s", networkName, physicalResourceStatusMessage(network.Status.Conditions)))
@@ -449,6 +489,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 			data.message = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
 			return nil, change
 		}
+
 		if data.security == nil {
 			security, securityErr := dcptun.NewTunnelProxySecurityConfig()
 			if securityErr != nil {
@@ -458,6 +499,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 			}
 			data.security = &security
 		}
+
 		if data.clientSecurityFile == "" {
 			path, securityFileErr := r.createLogicalTunnelProxySecurityFile(ctx, data.security.ClientProxyConfig())
 			if securityFileErr != nil {
@@ -466,6 +508,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 			}
 			data.clientSecurityFile = path
 		}
+
 		desiredContainer := &apiv2.PhysicalContainer{
 			ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
 			Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
@@ -482,6 +525,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 				Networks: []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: network.Status.PhysicalNetworkRef, Aliases: slices.Clone(proxy.Spec.Aliases)}},
 			}},
 		}
+
 		createdContainer, createErr := createLogicalBacking(ctx, r.Client, r.NoCacheClient, proxy, desiredContainer, physicalContainerFinalizer,
 			&data.containerUID, &data.unobservedChildren, nil)
 		if createErr != nil {
@@ -491,15 +535,18 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 			}
 			return nil, change | additionalReconciliationNeeded
 		}
+
 		container = createdContainer
 		change |= applyLogicalTunnelProxyContainerStatus(proxy, container)
 	}
+
 	if !observeTunnelContainer(container, data) {
 		if data.state != logicalTunnelProxyPending {
 			return nil, change | additionalReconciliationNeeded
 		}
 		return nil, change
 	}
+
 	return container, change
 }
 
@@ -510,6 +557,7 @@ func (r *LogicalContainerTunnelProxyReconciler) ensureLogicalTunnelServer(
 	if data.server.run != nil || data.server.operation != nil {
 		return true
 	}
+
 	controlPort, controlPortErr := physicalContainerHostPort(container.Status.PortMappings, dcptun.DefaultContainerProxyControlPort)
 	dataPort, dataPortErr := physicalContainerHostPort(container.Status.PortMappings, dcptun.DefaultContainerProxyDataPort)
 	if errors.Join(controlPortErr, dataPortErr) != nil {
@@ -526,10 +574,12 @@ func (r *LogicalContainerTunnelProxyReconciler) ensureLogicalTunnelServer(
 		data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, pathErr.Error())
 		return false
 	}
+
 	launch := logicalTunnelServerLaunch{
 		proxyName: proxy.NamespacedName(), proxyUID: proxy.UID, executablePath: executablePath,
 		clientControlPort: controlPort, clientDataPort: dataPort, security: *data.security,
 	}
+
 	operationCtx, cancel := context.WithCancel(r.LifetimeCtx)
 	operation := &logicalTunnelServerOperation{cancel: cancel}
 	enqueueErr := r.operationQueue.Enqueue(func(_ context.Context) {
@@ -541,7 +591,9 @@ func (r *LogicalContainerTunnelProxyReconciler) ensureLogicalTunnelServer(
 		log.Error(enqueueErr, "Failed to queue tunnel server launch")
 		return false
 	}
+
 	data.server = logicalTunnelServer{operation: operation}
+
 	return true
 }
 
@@ -560,6 +612,7 @@ func (r *LogicalContainerTunnelProxyReconciler) launchLogicalTunnelServer(
 	ctx context.Context, operation *logicalTunnelServerOperation, launch logicalTunnelServerLaunch, log logr.Logger,
 ) {
 	server, failure := r.startLogicalTunnelServer(ctx, launch, log)
+
 	queued := r.proxies.QueueDeferredOpForStateKey(launch.proxyName, launch.proxyUID,
 		func(name types.NamespacedName, _ types.UID, proxy *apiv2.LogicalContainerTunnelProxy) {
 			_, current := r.proxies.BorrowByNamespacedName(name)
@@ -567,6 +620,7 @@ func (r *LogicalContainerTunnelProxyReconciler) launchLogicalTunnelServer(
 				r.abandonLogicalTunnelServer(server, log)
 				return
 			}
+
 			if server.run != nil {
 				if exit, exited := server.run.getExit(); exited && exit.exitType == serverProxyExitTypeUnexpected {
 					// The exit callback ran before this result was applied, so it could not match the published run.
@@ -576,18 +630,22 @@ func (r *LogicalContainerTunnelProxyReconciler) launchLogicalTunnelServer(
 					}
 				}
 			}
+
 			current.server = server
+
 			// Deletion cancels startup, so a failure observed while deleting is not a startup failure.
 			starting := current.state == logicalTunnelProxyPending || current.state == logicalTunnelProxyStarting
 			if failure != "" && starting && proxy.DeletionTimestamp.IsZero() {
 				current.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, failure)
 			}
+
 			_ = r.proxies.Update(name, launch.proxyUID, current)
 		})
 	if !queued {
 		r.abandonLogicalTunnelServer(server, log)
 		return
 	}
+
 	r.ScheduleReconciliation(launch.proxyName)
 }
 
@@ -601,6 +659,7 @@ func (r *LogicalContainerTunnelProxyReconciler) startLogicalTunnelServer(
 		log.Error(stdoutErr, "Failed to create tunnel server stdout file")
 		return logicalTunnelServer{}, fmt.Sprintf("Failed to create tunnel server stdout file: %v", stdoutErr)
 	}
+
 	stderrFile, stderrErr := usvc_io.CreateNewTempFile(fmt.Sprintf("logical-tunnel_err_%s", launch.proxyUID), osutil.PermissionOnlyOwnerReadWrite)
 	if stderrErr != nil {
 		log.Error(stderrErr, "Failed to create tunnel server stderr file")
@@ -609,6 +668,7 @@ func (r *LogicalContainerTunnelProxyReconciler) startLogicalTunnelServer(
 		}
 		return logicalTunnelServer{}, fmt.Sprintf("Failed to create tunnel server stderr file: %v", stderrErr)
 	}
+
 	securityJSON, securityErr := json.Marshal(launch.security.ServerProxyConfig())
 	if securityErr != nil {
 		if cleanupErr := closeAndRemoveServerProxyOutputFiles(stdoutFile, stderrFile); cleanupErr != nil {
@@ -616,6 +676,7 @@ func (r *LogicalContainerTunnelProxyReconciler) startLogicalTunnelServer(
 		}
 		return logicalTunnelServer{}, fmt.Sprintf("Failed to encode tunnel server control security: %v", securityErr)
 	}
+
 	cmd := exec.Command(launch.executablePath, "tunnel-server",
 		networking.IPv4LocalhostDefaultAddress, strconv.Itoa(int(launch.clientControlPort)),
 		networking.IPv4LocalhostDefaultAddress, strconv.Itoa(int(launch.clientDataPort)),
@@ -625,12 +686,16 @@ func (r *LogicalContainerTunnelProxyReconciler) startLogicalTunnelServer(
 	cmd.Stdin = bytes.NewReader(securityJSON)
 	cmd.Stdout, cmd.Stderr = stdoutFile, stderrFile
 	cmd.Env = os.Environ()
+
 	logger.WithSessionId(cmd)
+
 	run := newServerProxyRun()
 	run.resourceUID = launch.proxyUID
+
 	exitHandler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
 		r.logicalTunnelServerExited(launch, run, stdoutFile, stderrFile, pid, exitCode, exitErr, log)
 	})
+
 	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(
 		context.Background(), cmd, exitHandler, process.CreationFlagEnsureKillOnDispose, nil)
 	if startErr != nil {
@@ -640,44 +705,79 @@ func (r *LogicalContainerTunnelProxyReconciler) startLogicalTunnelServer(
 		}
 		return logicalTunnelServer{}, fmt.Sprintf("Failed to start the host tunnel server process: %v", startErr)
 	}
+
 	// Record the process identity before enabling its exit callback.
 	run.handle = handle
+
 	startWaitForExit()
 	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
+
 	server := logicalTunnelServer{run: run, stdout: stdoutFile, stderr: stderrFile}
 
-	config, configErr := readServerProxyConfigOrExit(ctx, run, stdoutFile.Name(), r.config.ServerConfigReadTimeout)
-	var startupErr error
-	if configErr != nil {
-		startupErr = fmt.Errorf("read tunnel server configuration: %w", configErr)
-	} else if readyErr := waitServerProxyReadyOrExit(ctx, run, stdoutFile.Name(), r.config.ControlStartupTimeout); readyErr != nil {
-		startupErr = fmt.Errorf("wait for tunnel server control readiness: %w", readyErr)
-	} else if dialOptions, dialOptionsErr := launch.security.ControllerConfig().ClientDialOptions(); dialOptionsErr != nil {
-		startupErr = fmt.Errorf("prepare tunnel control client: %w", dialOptionsErr)
-	} else if connection, connectionErr := grpc.NewClient(
-		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, config.ServerControlPort), dialOptions...); connectionErr != nil {
-		startupErr = fmt.Errorf("create tunnel control client: %w", connectionErr)
-	} else {
-		server.connection = connection
-		return server, ""
+	connection, startupErr := r.connectLogicalTunnelServer(ctx, run, stdoutFile.Name(), launch.security)
+	if startupErr != nil {
+		return r.abortLogicalTunnelServerStartup(server, startupErr, log)
 	}
+
+	server.connection = connection
+
+	return server, ""
+}
+
+// connectLogicalTunnelServer waits for the launched server to report its control port and control readiness on stdout,
+// then creates the authenticated control client connection.
+func (r *LogicalContainerTunnelProxyReconciler) connectLogicalTunnelServer(
+	ctx context.Context, run *serverProxyRun, stdoutPath string, security dcptun.TunnelProxySecurityConfig,
+) (*grpc.ClientConn, error) {
+	config, configErr := readServerProxyConfigOrExit(ctx, run, stdoutPath, r.config.ServerConfigReadTimeout)
+	if configErr != nil {
+		return nil, fmt.Errorf("read tunnel server configuration: %w", configErr)
+	}
+
+	if readyErr := waitServerProxyReadyOrExit(ctx, run, stdoutPath, r.config.ControlStartupTimeout); readyErr != nil {
+		return nil, fmt.Errorf("wait for tunnel server control readiness: %w", readyErr)
+	}
+
+	dialOptions, dialOptionsErr := security.ControllerConfig().ClientDialOptions()
+	if dialOptionsErr != nil {
+		return nil, fmt.Errorf("prepare tunnel control client: %w", dialOptionsErr)
+	}
+
+	connection, connectionErr := grpc.NewClient(
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, config.ServerControlPort), dialOptions...)
+	if connectionErr != nil {
+		return nil, fmt.Errorf("create tunnel control client: %w", connectionErr)
+	}
+
+	return connection, nil
+}
+
+// abortLogicalTunnelServerStartup logs a failed startup, stops the server, and removes its output.
+// The returned server retains the process only when stopping it failed.
+func (r *LogicalContainerTunnelProxyReconciler) abortLogicalTunnelServerStartup(
+	server logicalTunnelServer, startupErr error, log logr.Logger,
+) (logicalTunnelServer, string) {
+	run, stdoutFile, stderrFile := server.run, server.stdout, server.stderr
 
 	failure := fmt.Sprintf("The host tunnel server did not become ready: %v", startupErr)
 	if exit, exited := run.getExit(); exited && exit.exitType == serverProxyExitTypeUnexpected {
 		failure = fmt.Sprintf("%s %s", tunnelBackingExitMessage("Host server process", &exit.exitCode), failure)
 	}
+
 	if stderrExcerpt := readBoundedServerProxyStderr(stderrFile.Name()); stderrExcerpt != "" {
 		log.Error(startupErr, "Tunnel server startup failed", "ServerStderr", stderrExcerpt)
 	} else {
 		log.Error(startupErr, "Tunnel server startup failed")
 	}
+
 	if stopErr := r.stopLogicalTunnelServerProcess(run); stopErr != nil {
-		log.Error(stopErr, "Failed to stop tunnel server after startup failure", "PID", handle.Pid)
+		log.Error(stopErr, "Failed to stop tunnel server after startup failure", "PID", run.handle.Pid)
 		return server, failure
 	}
 	if cleanupErr := closeAndRemoveServerProxyOutputFiles(stdoutFile, stderrFile); cleanupErr != nil {
 		log.Error(cleanupErr, "Failed to remove tunnel server output files")
 	}
+
 	return logicalTunnelServer{}, failure
 }
 
@@ -689,9 +789,11 @@ func (r *LogicalContainerTunnelProxyReconciler) logicalTunnelServerExited(
 	if closeErr := closeServerProxyOutputFiles(stdoutFile, stderrFile, false); closeErr != nil {
 		log.Error(closeErr, "Failed to close tunnel server output files", "PID", pid)
 	}
+
 	if !run.recordUnexpectedExit(exitCode, exitErr) {
 		return
 	}
+
 	// Output files are removed once the exit is applied, so capture the server's diagnostics now.
 	exitFailure := errors.Join(fmt.Errorf("tunnel server process exited unexpectedly with exit code %d", exitCode), exitErr)
 	if stderrExcerpt := readBoundedServerProxyStderr(stderrFile.Name()); stderrExcerpt != "" {
@@ -699,16 +801,19 @@ func (r *LogicalContainerTunnelProxyReconciler) logicalTunnelServerExited(
 	} else {
 		log.Error(exitFailure, "Tunnel server process exited unexpectedly", "PID", pid)
 	}
+
 	queued := r.proxies.QueueDeferredOpForStateKey(launch.proxyName, launch.proxyUID,
 		func(name types.NamespacedName, _ types.UID, _ *apiv2.LogicalContainerTunnelProxy) {
 			_, current := r.proxies.BorrowByNamespacedName(name)
 			if current == nil || current.server.run != run {
 				return
 			}
+
 			current.server.exited = true
 			if exitErr == nil && exitCode != process.UnknownExitCode {
 				current.server.exitCode = &exitCode
 			}
+
 			_ = r.proxies.Update(name, launch.proxyUID, current)
 		})
 	if queued {
@@ -718,12 +823,14 @@ func (r *LogicalContainerTunnelProxyReconciler) logicalTunnelServerExited(
 
 func (r *LogicalContainerTunnelProxyReconciler) stopLogicalTunnelServerProcess(run *serverProxyRun) error {
 	run.expectExit()
+
 	stopCtx, cancel := process.WithDetachedStopTimeout(r.LifetimeCtx)
 	defer cancel()
 	stopErr := r.config.ProcessExecutor.StopProcess(stopCtx, run.handle)
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		return stopErr
 	}
+
 	return nil
 }
 
@@ -733,20 +840,24 @@ func (r *LogicalContainerTunnelProxyReconciler) releaseLogicalTunnelServer(
 	proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData, log logr.Logger,
 ) bool {
 	server := &data.server
+
 	if server.operation != nil {
 		server.operation.cancel()
 		return false
 	}
+
 	if server.connection != nil {
 		if closeErr := server.connection.Close(); closeErr != nil && !errors.Is(closeErr, grpc.ErrClientConnClosing) {
 			log.Error(closeErr, "Failed to close tunnel control connection")
 		}
 		server.connection = nil
 	}
+
 	if server.run != nil && !server.exited {
 		if time.Now().Before(server.stopRetryAfter) {
 			return false
 		}
+
 		run, stdoutFile, stderrFile := server.run, server.stdout, server.stderr
 		operation := &logicalTunnelServerOperation{cancel: func() {}}
 		name, uid := proxy.NamespacedName(), proxy.UID
@@ -758,11 +869,13 @@ func (r *LogicalContainerTunnelProxyReconciler) releaseLogicalTunnelServer(
 				log.Error(cleanupErr, "Failed to remove tunnel server output files")
 				stopErr = cleanupErr
 			}
+
 			queued := r.proxies.QueueDeferredOpForStateKey(name, uid, func(currentName types.NamespacedName, _ types.UID, _ *apiv2.LogicalContainerTunnelProxy) {
 				_, current := r.proxies.BorrowByNamespacedName(currentName)
 				if current == nil || current.server.operation != operation {
 					return
 				}
+
 				current.server.operation = nil
 				if stopErr == nil {
 					current.server.exited, current.server.stdout, current.server.stderr = true, nil, nil
@@ -770,6 +883,7 @@ func (r *LogicalContainerTunnelProxyReconciler) releaseLogicalTunnelServer(
 				} else {
 					current.server.stopRetryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 				}
+
 				_ = r.proxies.Update(currentName, uid, current)
 			})
 			if queued {
@@ -780,9 +894,12 @@ func (r *LogicalContainerTunnelProxyReconciler) releaseLogicalTunnelServer(
 			log.Error(enqueueErr, "Failed to queue tunnel server stop")
 			return false
 		}
+
 		server.operation = operation
+
 		return false
 	}
+
 	if server.stdout != nil || server.stderr != nil {
 		if cleanupErr := closeAndRemoveServerProxyOutputFiles(server.stdout, server.stderr); cleanupErr != nil {
 			log.Error(cleanupErr, "Failed to remove tunnel server output files")
@@ -790,6 +907,7 @@ func (r *LogicalContainerTunnelProxyReconciler) releaseLogicalTunnelServer(
 		}
 		server.stdout, server.stderr = nil, nil
 	}
+
 	return true
 }
 
@@ -799,13 +917,16 @@ func (r *LogicalContainerTunnelProxyReconciler) abandonLogicalTunnelServer(serve
 		// The in-flight operation releases its own result once it can no longer publish it.
 		server.operation.cancel()
 	}
+
 	if server.connection != nil {
 		_ = server.connection.Close()
 	}
+
 	running := server.run != nil && !server.exited
 	if !running && server.stdout == nil && server.stderr == nil {
 		return
 	}
+
 	enqueueErr := r.operationQueue.Enqueue(func(_ context.Context) {
 		if running {
 			if stopErr := r.stopLogicalTunnelServerProcess(server.run); stopErr != nil {
@@ -813,6 +934,7 @@ func (r *LogicalContainerTunnelProxyReconciler) abandonLogicalTunnelServer(serve
 				return
 			}
 		}
+
 		if cleanupErr := closeAndRemoveServerProxyOutputFiles(server.stdout, server.stderr); cleanupErr != nil {
 			log.Error(cleanupErr, "Failed to remove abandoned tunnel server output files")
 		}
@@ -829,6 +951,7 @@ func (r *LogicalContainerTunnelProxyReconciler) createLogicalTunnelProxySecurity
 	if marshalErr != nil {
 		return "", fmt.Errorf("encode logical tunnel control security: %w", marshalErr)
 	}
+
 	return r.securityFiles.Create(ctx, "logical-tunnel-control-", clientProxySecurityFileName, contents)
 }
 
@@ -842,19 +965,23 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainer(
 		lookupErr := fmt.Errorf("list owned physical containers: %w", listErr)
 		return nil, lookupErr
 	}
+
 	var owned *apiv2.PhysicalContainer
 	for index := range children.Items {
 		child := &children.Items[index]
 		if !metav1.IsControlledBy(child, proxy) {
 			continue
 		}
+
 		if owned != nil {
 			multipleErr := fmt.Errorf("more than one PhysicalContainer belongs to %q", proxy.NamespacedName())
 			data.failMissing(multipleErr.Error())
 			return nil, multipleErr
 		}
+
 		owned = child
 	}
+
 	if owned != nil {
 		data.unobservedChildren.observeCached(owned)
 		if (data.containerUID != "" && owned.UID != data.containerUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
@@ -864,6 +991,7 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainer(
 		}
 		data.containerUID = owned.UID
 	}
+
 	return owned, nil
 }
 
@@ -877,19 +1005,23 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainerImage(
 		lookupErr := fmt.Errorf("list owned physical images: %w", listErr)
 		return nil, lookupErr
 	}
+
 	var owned *apiv2.PhysicalContainerImage
 	for index := range children.Items {
 		child := &children.Items[index]
 		if !metav1.IsControlledBy(child, proxy) {
 			continue
 		}
+
 		if owned != nil {
 			multipleErr := fmt.Errorf("more than one PhysicalContainerImage belongs to %q", proxy.NamespacedName())
 			data.failMissing(multipleErr.Error())
 			return nil, multipleErr
 		}
+
 		owned = child
 	}
+
 	if owned != nil {
 		data.unobservedChildren.observeCached(owned)
 		if (data.imageUID != "" && owned.UID != data.imageUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
@@ -899,6 +1031,7 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainerImage(
 		}
 		data.imageUID = owned.UID
 	}
+
 	return owned, nil
 }
 
@@ -916,19 +1049,24 @@ func handleLogicalTunnelProxyStarting(
 		data.message = "Waiting to observe the owned PhysicalContainer."
 		return additionalReconciliationNeeded
 	}
+
 	change := applyLogicalTunnelProxyContainerStatus(proxy, container)
+
 	image, imageErr := r.findPhysicalContainerImage(ctx, proxy, data)
 	if imageErr != nil {
 		log.Error(imageErr, "Failed to get starting tunnel image")
 		return change | additionalReconciliationNeeded
 	}
+
 	change |= applyLogicalTunnelProxyImageStatus(proxy, image)
+
 	if !observeTunnelContainer(container, data) {
 		if data.state != logicalTunnelProxyStarting {
 			change |= additionalReconciliationNeeded
 		}
 		return change
 	}
+
 	switch {
 	case data.server.operation != nil:
 		data.message = "Waiting for the host tunnel server to report control readiness."
@@ -943,6 +1081,7 @@ func handleLogicalTunnelProxyStarting(
 		data.state, data.started = logicalTunnelProxyRunning, true
 		change |= additionalReconciliationNeeded
 	}
+
 	return change
 }
 
@@ -951,6 +1090,7 @@ func observeTunnelContainer(container *apiv2.PhysicalContainer, data *logicalTun
 		data.failMissing("The owned PhysicalContainer is being deleted.")
 		return false
 	}
+
 	switch container.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		return container.Status.ContainerID != ""
@@ -974,6 +1114,7 @@ func observeTunnelContainer(container *apiv2.PhysicalContainer, data *logicalTun
 			data.state, data.reason = logicalTunnelProxyUnknown, apiv2.LogicalContainerTunnelProxyReasonLookupFailed
 		}
 	}
+
 	return false
 }
 
@@ -981,6 +1122,7 @@ func tunnelBackingExitMessage(backing string, exitCode *int32) string {
 	if exitCode == nil {
 		return backing + " exited."
 	}
+
 	return fmt.Sprintf("%s exited with code %d.", backing, *exitCode)
 }
 
@@ -992,13 +1134,16 @@ func (r *LogicalContainerTunnelProxyReconciler) observeTunnelPair(
 		log.Error(imageErr, "Failed to get tunnel image")
 		return noChange, false
 	}
+
 	container, containerErr := r.findPhysicalContainer(ctx, proxy, data)
 	if containerErr != nil {
 		log.Error(containerErr, "Failed to get tunnel container")
 		return noChange, false
 	}
+
 	change := applyLogicalTunnelProxyContainerStatus(proxy, container)
 	change |= applyLogicalTunnelProxyImageStatus(proxy, image)
+
 	var missing []string
 	if container == nil {
 		missing = append(missing, "The owned PhysicalContainer no longer exists.")
@@ -1009,10 +1154,12 @@ func (r *LogicalContainerTunnelProxyReconciler) observeTunnelPair(
 	if data.server.run == nil || (data.server.connection == nil && !data.server.exited) {
 		missing = append(missing, "The host tunnel server process is not running.")
 	}
+
 	if len(missing) != 0 {
 		data.failMissing(strings.Join(missing, " "))
 		return change, false
 	}
+
 	switch {
 	case !container.DeletionTimestamp.IsZero():
 		data.failMissing("The owned PhysicalContainer is being deleted.")
@@ -1031,6 +1178,7 @@ func (r *LogicalContainerTunnelProxyReconciler) observeTunnelPair(
 	case container.Status.Phase == apiv2.PhysicalContainerPhaseRunning:
 		return change, container.Status.ContainerID != ""
 	}
+
 	return change, false
 }
 
@@ -1044,29 +1192,37 @@ func handleLogicalTunnelProxyRunning(
 		if data.state == logicalTunnelProxyRunning && data.reason == apiv2.LogicalContainerTunnelProxyReasonPaused {
 			return change
 		}
+
 		if endpointErr := syncOwnedServiceEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, &data.unobservedChildren, nil); endpointErr != nil {
 			log.Error(endpointErr, "Failed to withdraw unavailable tunnel endpoints")
 		}
+
 		return change | additionalReconciliationNeeded
 	}
+
 	data.state = logicalTunnelProxyRunning
 	change |= r.manageLogicalTunnels(ctx, proxy, data, log)
+
 	desired := make(map[string]apiv2.ServiceEndpointSpec)
 	for _, tunnel := range proxy.Spec.Tunnels {
 		record, found := data.tunnels[tunnel.Name]
 		if !found || record.status.State != apiv2.LogicalContainerTunnelStateReady {
 			continue
 		}
+
 		var addresses []apiv2.ServiceAddress
 		for _, address := range record.status.ClientProxyAddresses {
 			addresses = append(addresses, apiv2.ServiceAddress{Address: address, Port: record.status.ClientProxyPort})
 		}
+
 		desired[logicalPortResourceName(proxy, tunnel.Name)] = apiv2.ServiceEndpointSpec{ServiceRef: tunnel.ClientServiceRef, Addresses: addresses}
 	}
+
 	if endpointErr := syncOwnedServiceEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, &data.unobservedChildren, desired); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize tunnel endpoints")
 		change |= additionalReconciliationNeeded
 	}
+
 	return change
 }
 
@@ -1078,6 +1234,7 @@ func handleLogicalTunnelProxyTerminal(
 	if !r.releaseLogicalTunnelServer(proxy, data, log) {
 		change |= additionalReconciliationNeeded
 	}
+
 	for name, record := range data.tunnels {
 		if record.status.State != apiv2.LogicalContainerTunnelStateFailed {
 			record.status.State, record.status.ErrorMessage, record.status.Timestamp = apiv2.LogicalContainerTunnelStateFailed, "The tunnel proxy is unavailable.", metav1.NowMicro()
@@ -1085,10 +1242,12 @@ func handleLogicalTunnelProxyTerminal(
 			data.configurationVersion++
 		}
 	}
+
 	if endpointErr := syncOwnedServiceEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, &data.unobservedChildren, nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw terminal tunnel endpoints")
 		change |= additionalReconciliationNeeded
 	}
+
 	var containers apiv2.PhysicalContainerList
 	containerListErr := r.List(ctx, &containers, ctrl_client.InNamespace(proxy.Namespace),
 		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)})
@@ -1101,6 +1260,7 @@ func handleLogicalTunnelProxyTerminal(
 			if !metav1.IsControlledBy(container, proxy) || !container.DeletionTimestamp.IsZero() || container.Spec.Stop {
 				continue
 			}
+
 			containerPatch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 			container.Spec.Stop = true
 			if containerStopErr := r.Patch(ctx, container, containerPatch); containerStopErr != nil {
@@ -1109,6 +1269,7 @@ func handleLogicalTunnelProxyTerminal(
 			}
 		}
 	}
+
 	return change
 }
 
@@ -1117,6 +1278,7 @@ func handleLogicalTunnelProxyStopping(
 	state logicalTunnelProxyState, data *logicalTunnelProxyData, log logr.Logger,
 ) objectChange {
 	change := handleLogicalTunnelProxyTerminal(ctx, r, proxy, state, data, log)
+
 	container, containerErr := r.findPhysicalContainer(ctx, proxy, data)
 	if containerErr != nil {
 		log.Error(containerErr, "Failed to get stopping tunnel container")
@@ -1125,12 +1287,15 @@ func handleLogicalTunnelProxyStopping(
 	if data.state != logicalTunnelProxyStopping {
 		return change | additionalReconciliationNeeded
 	}
+
 	change |= applyLogicalTunnelProxyContainerStatus(proxy, container)
+
 	containerStopped := container == nil || container.Status.Phase == apiv2.PhysicalContainerPhaseExited || container.Status.Phase == apiv2.PhysicalContainerPhaseFailed
 	serverStopped := data.server.operation == nil && (data.server.run == nil || data.server.exited)
 	if containerStopped && serverStopped {
 		data.state, data.reason = logicalTunnelProxyExited, apiv2.LogicalContainerTunnelProxyReasonCompleted
 	}
+
 	return change
 }
 
@@ -1142,13 +1307,16 @@ func handleLogicalTunnelProxyUnknown(
 	if data.started {
 		return handleLogicalTunnelProxyRunning(ctx, r, proxy, state, data, log)
 	}
+
 	change := noChange
 	if endpointErr := syncOwnedServiceEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, &data.unobservedChildren, nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw tunnel endpoints after invalid state")
 		change |= additionalReconciliationNeeded
 	}
+
 	log.Error(fmt.Errorf("invalid tunnel proxy state %q", state), "Restarting logical tunnel proxy discovery")
 	data.state, data.reason, data.message = logicalTunnelProxyPending, "", ""
+
 	return change | additionalReconciliationNeeded
 }
 
@@ -1156,15 +1324,18 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData, log logr.Logger,
 ) objectChange {
 	client := r.config.MakeTunnelControlClient(data.server.connection)
+
 	desired := make(map[string]apiv2.LogicalContainerTunnel)
 	for _, tunnel := range proxy.Spec.Tunnels {
 		desired[tunnel.Name] = tunnel
 	}
+
 	change := noChange
 	for name, record := range data.tunnels {
 		if _, wanted := desired[name]; wanted {
 			continue
 		}
+
 		if record.status.TunnelID != 0 || record.server != (apiv2.ServiceAddress{}) {
 			if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID, name); deleteErr != nil {
 				log.Error(deleteErr, "Failed to delete removed tunnel", "Tunnel", name)
@@ -1172,94 +1343,175 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 				continue
 			}
 		}
+
 		delete(data.tunnels, name)
 		data.configurationVersion++
 	}
+
 	for _, tunnel := range proxy.Spec.Tunnels {
 		record, exists := data.tunnels[tunnel.Name]
 		if !exists {
 			record.status = apiv2.LogicalContainerTunnelStatus{Name: tunnel.Name, State: apiv2.LogicalContainerTunnelStateNotReady, Timestamp: metav1.NowMicro()}
 		}
+
 		original := record.status.DeepCopy()
 		if record.status.State != apiv2.LogicalContainerTunnelStateFailed {
-			server, serverErr := r.tunnelServices(ctx, proxy, tunnel)
-			if serverErr != nil {
-				log.V(1).Info("Tunnel services are unavailable", "Tunnel", tunnel.Name, "Error", serverErr)
-				change |= additionalReconciliationNeeded
-			}
-			if record.status.State == apiv2.LogicalContainerTunnelStateReady && (serverErr != nil || record.server != server) {
-				if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID, tunnel.Name); deleteErr != nil {
-					log.Error(deleteErr, "Failed to delete unavailable tunnel", "Tunnel", tunnel.Name)
-					change |= additionalReconciliationNeeded
-					record.status.State = apiv2.LogicalContainerTunnelStateNotReady
-				} else {
-					record.status = apiv2.LogicalContainerTunnelStatus{Name: tunnel.Name, State: apiv2.LogicalContainerTunnelStateNotReady, Timestamp: metav1.NowMicro()}
-					record.server, record.attempts = apiv2.ServiceAddress{}, 0
-				}
-			}
-			if record.status.State == apiv2.LogicalContainerTunnelStateNotReady && !time.Now().Before(record.retryAfter) {
-				// A lost preparation response leaves no ID, but its named runtime tunnel blocks a changed request.
-				if record.status.TunnelID != 0 || (record.server != (apiv2.ServiceAddress{}) && record.server != server) {
-					if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID, tunnel.Name); deleteErr != nil {
-						log.Error(deleteErr, "Failed to retire previous tunnel")
-						change |= additionalReconciliationNeeded
-					} else {
-						record.status.TunnelID, record.server = 0, apiv2.ServiceAddress{}
-					}
-				}
-				if record.status.TunnelID == 0 && serverErr == nil && (record.server == (apiv2.ServiceAddress{}) || record.server == server) {
-					record.attempts++
-					record.retryAfter = time.Now().Add(r.ReconciliationDelay(StandardDelay))
-					if record.attempts > r.config.MaxTunnelPreparationAttempts {
-						record.status.State, record.status.ErrorMessage = apiv2.LogicalContainerTunnelStateFailed, "Maximum tunnel preparation attempts reached."
-					} else {
-						record.server = server
-						operationCtx, cancel := context.WithTimeout(ctx, tunnelOperationTimeout)
-						request := &dcptunproto.TunnelReq{ServerAddress: stdproto.String(server.Address), ServerPort: stdproto.Int32(server.Port),
-							ClientProxyPort: stdproto.Int32(server.Port), AllowClientProxyPortFallback: stdproto.Bool(true),
-							TunnelName: stdproto.String(tunnel.Name)}
-						prepared, prepareErr := client.PrepareTunnel(operationCtx, request)
-						cancel()
-						if prepareErr != nil {
-							log.Error(prepareErr, "Failed to prepare tunnel", "Tunnel", tunnel.Name)
-							change |= additionalReconciliationNeeded
-						} else if prepared.GetTunnelRef().GetTunnelId() == 0 || !networking.IsValidPort(int(prepared.GetClientProxyPort())) || len(prepared.GetClientProxyAddresses()) == 0 {
-							log.Error(errors.New("invalid tunnel preparation response"), "Failed to prepare tunnel", "Tunnel", tunnel.Name)
-							change |= additionalReconciliationNeeded
-						} else {
-							record.status.State, record.status.TunnelID = apiv2.LogicalContainerTunnelStateReady, prepared.GetTunnelRef().GetTunnelId()
-							record.status.ClientProxyAddresses, record.status.ClientProxyPort = slices.Clone(prepared.GetClientProxyAddresses()), prepared.GetClientProxyPort()
-							slices.Sort(record.status.ClientProxyAddresses)
-							record.status.ClientProxyAddresses = slices.Compact(record.status.ClientProxyAddresses)
-							record.attempts = 0
-						}
-					}
-				}
-			}
-			if record.status.State == apiv2.LogicalContainerTunnelStateNotReady {
-				change |= additionalReconciliationNeeded
-			}
+			change |= r.reconcileLogicalTunnel(ctx, client, proxy, tunnel, &record, log)
 		}
+
 		if !exists || !reflect.DeepEqual(original, &record.status) {
 			record.status.Timestamp = metav1.NowMicro()
 			data.configurationVersion++
 		}
+
 		data.tunnels[tunnel.Name] = record
 	}
+
 	return change
+}
+
+// reconcileLogicalTunnel withdraws a ready tunnel whose host service is gone or changed, retires any stale runtime tunnel,
+// and prepares the tunnel once its retry delay has elapsed. It must not be called for a Failed tunnel.
+func (r *LogicalContainerTunnelProxyReconciler) reconcileLogicalTunnel(
+	ctx context.Context, client dcptunproto.TunnelControlClient, proxy *apiv2.LogicalContainerTunnelProxy,
+	tunnel apiv2.LogicalContainerTunnel, record *logicalTunnelRecord, log logr.Logger,
+) objectChange {
+	change := noChange
+
+	server, serverErr := r.tunnelServices(ctx, proxy, tunnel)
+	if serverErr != nil {
+		log.V(1).Info("Tunnel services are unavailable", "Tunnel", tunnel.Name, "Error", serverErr)
+		change |= additionalReconciliationNeeded
+	}
+
+	if record.status.State == apiv2.LogicalContainerTunnelStateReady && (serverErr != nil || record.server != server) {
+		if withdrawErr := withdrawLogicalTunnel(ctx, client, tunnel.Name, record); withdrawErr != nil {
+			log.Error(withdrawErr, "Failed to delete unavailable tunnel", "Tunnel", tunnel.Name)
+			return change | additionalReconciliationNeeded
+		}
+	}
+
+	if record.status.State == apiv2.LogicalContainerTunnelStateNotReady && !time.Now().Before(record.retryAfter) {
+		if retireErr := retireStaleLogicalTunnel(ctx, client, tunnel.Name, record, server); retireErr != nil {
+			log.Error(retireErr, "Failed to retire previous tunnel", "Tunnel", tunnel.Name)
+			return change | additionalReconciliationNeeded
+		}
+
+		if serverErr == nil {
+			r.attemptLogicalTunnelPreparation(ctx, client, tunnel.Name, record, server, log)
+		}
+	}
+
+	if record.status.State == apiv2.LogicalContainerTunnelStateNotReady {
+		change |= additionalReconciliationNeeded
+	}
+
+	return change
+}
+
+// withdrawLogicalTunnel marks a ready tunnel NotReady and deletes its runtime tunnel.
+// A failed deletion keeps the tunnel ID so a later reconciliation retires it before the tunnel is prepared again.
+func withdrawLogicalTunnel(
+	ctx context.Context, client dcptunproto.TunnelControlClient, name string, record *logicalTunnelRecord,
+) error {
+	record.status.State = apiv2.LogicalContainerTunnelStateNotReady
+
+	if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID, name); deleteErr != nil {
+		return deleteErr
+	}
+
+	record.status = apiv2.LogicalContainerTunnelStatus{Name: name, State: apiv2.LogicalContainerTunnelStateNotReady, Timestamp: metav1.NowMicro()}
+	record.server, record.attempts = apiv2.ServiceAddress{}, 0
+
+	return nil
+}
+
+// retireStaleLogicalTunnel deletes a runtime tunnel left by an earlier preparation that could block preparing server.
+// A lost preparation response leaves no ID, but its named runtime tunnel blocks a changed request.
+func retireStaleLogicalTunnel(
+	ctx context.Context, client dcptunproto.TunnelControlClient, name string, record *logicalTunnelRecord, server apiv2.ServiceAddress,
+) error {
+	stale := record.status.TunnelID != 0 || (record.server != (apiv2.ServiceAddress{}) && record.server != server)
+	if !stale {
+		return nil
+	}
+
+	if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID, name); deleteErr != nil {
+		return deleteErr
+	}
+
+	record.status.TunnelID, record.server = 0, apiv2.ServiceAddress{}
+
+	return nil
+}
+
+// attemptLogicalTunnelPreparation counts a preparation attempt and either fails the tunnel after too many attempts,
+// or prepares the runtime tunnel for server and records it as Ready.
+func (r *LogicalContainerTunnelProxyReconciler) attemptLogicalTunnelPreparation(
+	ctx context.Context, client dcptunproto.TunnelControlClient, name string, record *logicalTunnelRecord,
+	server apiv2.ServiceAddress, log logr.Logger,
+) {
+	record.attempts++
+	record.retryAfter = time.Now().Add(r.ReconciliationDelay(StandardDelay))
+
+	if record.attempts > r.config.MaxTunnelPreparationAttempts {
+		record.status.State, record.status.ErrorMessage = apiv2.LogicalContainerTunnelStateFailed, "Maximum tunnel preparation attempts reached."
+		return
+	}
+
+	// Recorded before the request so a lost response still identifies the runtime tunnel that may exist.
+	record.server = server
+
+	prepared, prepareErr := prepareLogicalTunnel(ctx, client, name, server)
+	if prepareErr != nil {
+		log.Error(prepareErr, "Failed to prepare tunnel", "Tunnel", name)
+		return
+	}
+
+	addresses := slices.Clone(prepared.GetClientProxyAddresses())
+	slices.Sort(addresses)
+
+	record.status.State, record.status.TunnelID = apiv2.LogicalContainerTunnelStateReady, prepared.GetTunnelRef().GetTunnelId()
+	record.status.ClientProxyAddresses, record.status.ClientProxyPort = slices.Compact(addresses), prepared.GetClientProxyPort()
+	record.attempts = 0
+}
+
+// prepareLogicalTunnel requests the named runtime tunnel for server and validates the response.
+func prepareLogicalTunnel(
+	ctx context.Context, client dcptunproto.TunnelControlClient, name string, server apiv2.ServiceAddress,
+) (*dcptunproto.TunnelSpec, error) {
+	operationCtx, cancel := context.WithTimeout(ctx, tunnelOperationTimeout)
+	defer cancel()
+
+	request := &dcptunproto.TunnelReq{ServerAddress: stdproto.String(server.Address), ServerPort: stdproto.Int32(server.Port),
+		ClientProxyPort: stdproto.Int32(server.Port), AllowClientProxyPortFallback: stdproto.Bool(true),
+		TunnelName: stdproto.String(name)}
+	prepared, prepareErr := client.PrepareTunnel(operationCtx, request)
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
+
+	if prepared.GetTunnelRef().GetTunnelId() == 0 || !networking.IsValidPort(int(prepared.GetClientProxyPort())) || len(prepared.GetClientProxyAddresses()) == 0 {
+		return nil, errors.New("invalid tunnel preparation response")
+	}
+
+	return prepared, nil
 }
 
 func deleteLogicalTunnel(ctx context.Context, client dcptunproto.TunnelControlClient, id uint32, name string) error {
 	operationCtx, cancel := context.WithTimeout(ctx, tunnelOperationTimeout)
 	defer cancel()
+
 	reference := &dcptunproto.TunnelRef{TunnelName: stdproto.String(name)}
 	if id != 0 {
 		reference.TunnelId = stdproto.Uint32(id)
 	}
+
 	_, deleteErr := client.DeleteTunnel(operationCtx, reference)
 	if status.Code(deleteErr) == codes.NotFound {
 		return nil
 	}
+
 	return deleteErr
 }
 
@@ -1272,9 +1524,11 @@ func (r *LogicalContainerTunnelProxyReconciler) tunnelServices(
 		if index == 1 {
 			reference = tunnel.ClientServiceRef
 		}
+
 		if getErr := r.Get(ctx, commonapi.AsNamespacedName(reference, proxy.Namespace), service); getErr != nil {
 			return apiv2.ServiceAddress{}, getErr
 		}
+
 		if !service.DeletionTimestamp.IsZero() || service.Status.Phase == apiv2.LogicalServicePhaseFailed {
 			return apiv2.ServiceAddress{}, errors.New("tunnel service failed or is terminating")
 		}
@@ -1282,9 +1536,11 @@ func (r *LogicalContainerTunnelProxyReconciler) tunnelServices(
 			return apiv2.ServiceAddress{}, errors.New("tunnel services must use TCP")
 		}
 	}
+
 	if client.Spec.AddressAllocationMode != apiv2.ServiceAddressAllocationModeProxyless {
 		return apiv2.ServiceAddress{}, errors.New("tunnel client service must be Proxyless")
 	}
+
 	address, found, selectionErr := networking.SelectServiceAddress(server.Status.EffectiveAddresses, networking.IpVersionPreferenceNone, networking.GetIpVersionPreference())
 	if selectionErr != nil {
 		return apiv2.ServiceAddress{}, selectionErr
@@ -1292,6 +1548,7 @@ func (r *LogicalContainerTunnelProxyReconciler) tunnelServices(
 	if !found {
 		return apiv2.ServiceAddress{}, errors.New("host service has no effective address")
 	}
+
 	return address, nil
 }
 
@@ -1299,6 +1556,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData, log logr.Logger,
 ) (change objectChange, delay AdditionalReconciliationDelay) {
 	delay = StandardDelay
+
 	if data == nil {
 		data = &logicalTunnelProxyData{}
 		for _, child := range []commonapi.DcpModelObject{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}} {
@@ -1308,14 +1566,17 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 		for _, tunnel := range proxy.Spec.Tunnels {
 			data.unobservedChildren.recordCreateAttempt(&apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: logicalPortResourceName(proxy, tunnel.Name)}})
 		}
+
 		r.proxies.Store(proxy.NamespacedName(), proxy.UID, data.Clone())
 	}
+
 	defer func() {
 		if data != nil {
 			_ = r.proxies.Update(proxy.NamespacedName(), proxy.UID, data)
 			if data.state == "" {
 				return
 			}
+
 			projectionChange, projectionDelay, valid := data.applyTo(proxy)
 			change |= projectionChange
 			delay = projectionDelay
@@ -1324,22 +1585,27 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 			}
 		}
 	}()
+
 	if data.state == logicalTunnelProxyRunning || (data.state == logicalTunnelProxyUnknown && data.started) {
 		data.state, data.reason, data.message = logicalTunnelProxyStopping, "", "Stopping the tunnel proxy pair for deletion."
 	}
+
 	endpointsComplete, endpointErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, data.unobservedChildren)
 	if endpointErr != nil {
 		log.Error(endpointErr, "Failed to clean up tunnel endpoints")
 	}
+
 	waiting := !endpointsComplete || endpointErr != nil
 	workloadsComplete := true
 	if !r.releaseLogicalTunnelServer(proxy, data, log) {
 		waiting, workloadsComplete = true, false
 	}
+
 	options := []ctrl_client.ListOption{
 		ctrl_client.InNamespace(proxy.Namespace),
 		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)},
 	}
+
 	var containers apiv2.PhysicalContainerList
 	containerListErr := r.List(ctx, &containers, options...)
 	if containerListErr != nil {
@@ -1354,6 +1620,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 			if !metav1.IsControlledBy(container, proxy) {
 				continue
 			}
+
 			waiting, workloadsComplete = true, false
 			if container.DeletionTimestamp.IsZero() {
 				containerUID := container.UID
@@ -1362,6 +1629,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 				}
 				continue
 			}
+
 			if !hasFinalizer(container, physicalContainerFinalizer) {
 				if containerReleaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, container); containerReleaseErr != nil && !apierrors.IsNotFound(containerReleaseErr) {
 					log.Error(containerReleaseErr, "Failed to release logical tunnel container hold")
@@ -1369,6 +1637,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 			}
 		}
 	}
+
 	if workloadsComplete {
 		var images apiv2.PhysicalContainerImageList
 		imageListErr := r.List(ctx, &images, options...)
@@ -1384,6 +1653,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 				if !metav1.IsControlledBy(image, proxy) {
 					continue
 				}
+
 				waiting = true
 				if image.DeletionTimestamp.IsZero() {
 					imageUID := image.UID
@@ -1392,6 +1662,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 					}
 					continue
 				}
+
 				if !hasFinalizer(image, physicalContainerImageFinalizer) {
 					if imageReleaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, image); imageReleaseErr != nil && !apierrors.IsNotFound(imageReleaseErr) {
 						log.Error(imageReleaseErr, "Failed to release logical tunnel image hold")
@@ -1400,17 +1671,21 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 			}
 		}
 	}
+
 	if workloadsComplete && data.state == logicalTunnelProxyStopping {
 		data.state, data.reason, data.message = logicalTunnelProxyExited, apiv2.LogicalContainerTunnelProxyReasonStopped,
 			"DCP stopped the tunnel proxy pair for deletion."
 	}
+
 	if waiting {
 		return additionalReconciliationNeeded, delay
 	}
+
 	if discardErr := r.discardLogicalTunnelProxyData(proxy.NamespacedName()); discardErr != nil {
 		log.Error(discardErr, "Failed to discard logical tunnel proxy state")
 		return additionalReconciliationNeeded, delay
 	}
+
 	data = nil
 	return deleteFinalizer(proxy, logicalTunnelProxyFinalizer, log), delay
 }

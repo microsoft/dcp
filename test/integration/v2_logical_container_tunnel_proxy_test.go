@@ -280,16 +280,7 @@ func (boundary *tunnelRetirementFailureClient) DeleteTunnel(
 	ctx context.Context, reference *dcptunproto.TunnelRef, options ...grpc.CallOption,
 ) (*emptypb.Empty, error) {
 	if boundary.blocked.Load() {
-		if boundary.failed.CompareAndSwap(false, true) {
-			// Expire the preparation backoff so both retirement attempts fail in the same reconciliation.
-			timer := time.NewTimer(3 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
+		boundary.failed.Store(true)
 		return nil, errors.New("injected tunnel retirement failure")
 	}
 	return boundary.TunnelControlClient.DeleteTunnel(ctx, reference, options...)
