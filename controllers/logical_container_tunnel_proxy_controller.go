@@ -768,7 +768,7 @@ func (r *LogicalContainerTunnelProxyReconciler) releaseLogicalTunnelServer(
 					current.server.exited, current.server.stdout, current.server.stderr = true, nil, nil
 					current.server.stopRetryAfter = time.Time{}
 				} else {
-					current.server.stopRetryAfter = time.Now().Add(delayDuration(LongDelay))
+					current.server.stopRetryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 				}
 				_ = r.proxies.Update(currentName, uid, current)
 			})
@@ -1209,7 +1209,7 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 				}
 				if record.status.TunnelID == 0 && serverErr == nil && (record.server == (apiv2.ServiceAddress{}) || record.server == server) {
 					record.attempts++
-					record.retryAfter = time.Now().Add(delayDuration(StandardDelay))
+					record.retryAfter = time.Now().Add(r.ReconciliationDelay(StandardDelay))
 					if record.attempts > r.config.MaxTunnelPreparationAttempts {
 						record.status.State, record.status.ErrorMessage = apiv2.LogicalContainerTunnelStateFailed, "Maximum tunnel preparation attempts reached."
 					} else {

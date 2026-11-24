@@ -638,6 +638,9 @@ func StartTestEnvironmentWithOptions(
 		}
 		logicalTunnelR := controllers.NewLogicalContainerTunnelProxyReconciler(
 			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerTunnelProxyReconciler"), logicalTunnelConfig)
+		if timingErr := logicalTunnelR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure LogicalContainerTunnelProxy reconciliation timing: %w", timingErr)
+		}
 		if setupErr := logicalTunnelR.SetupWithManager(mgr, instanceTag+"-LogicalContainerTunnelProxyReconciler"); setupErr != nil {
 			return nil, nil, fmt.Errorf("initialize LogicalContainerTunnelProxy reconciler: %w", setupErr)
 		}
