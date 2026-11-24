@@ -568,7 +568,8 @@ func (apiClient *processReplacementCreateFailureClient) Create(ctx context.Conte
 func TestV2LogicalProcessControllerStopSupersedesPreparedReplacement(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	// The persistent-process cleanup below must run before cancellation closes the environment's state store.
+	t.Cleanup(cancel)
 	var boundary *processReplacementCreateFailureClient
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
@@ -988,10 +989,12 @@ func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testi
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	const namespaceName = "v2-process-exited-adoption-registration"
+	timing := testReconciliationTiming
+	timing.MonitoringDelay = 30 * time.Second
 	var reader *namespaceWorkloadFailureReader
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+		TestEnvironmentOptions{ReconciliationTiming: &timing, DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
 			reader = &namespaceWorkloadFailureReader{Reader: apiReader, namespaceName: namespaceName}
 			return reader
 		}})

@@ -59,6 +59,9 @@ type ReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStruct
 
 	// The kind of the object being reconciled, for logging purposes
 	kind string
+
+	// Instance-local timing override, configured before scheduling or reconciliation begins.
+	timing *ReconciliationTiming
 }
 
 func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStruct[T]](
@@ -80,6 +83,51 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 		rb.doScheduleReconciliation(name)
 	})
 	return rb
+}
+
+// ConfigureReconciliationTiming sets instance-local intervals before the reconciler starts.
+// Runtime operations, test context deadlines, and conflict backoff are unaffected.
+func (rb *ReconcilerBase[T, PT]) ConfigureReconciliationTiming(timing ReconciliationTiming) error {
+	if timing.StandardDelay <= 0 || timing.RetryDelay <= 0 || timing.MonitoringDelay <= 0 ||
+		timing.DebounceDelay <= 0 || timing.MaxDebounceDelay < timing.DebounceDelay {
+		return fmt.Errorf("reconciliation intervals must be positive and maximum debounce must not be shorter than debounce")
+	}
+	rb.timing = &timing
+	rb.debouncer.debounceDelay, rb.debouncer.maxDelay = timing.DebounceDelay, timing.MaxDebounceDelay
+	return nil
+}
+
+// ReconciliationDelay returns the base interval used to establish retry eligibility.
+// Scheduling applies the same configuration, with production jitter only when no override is configured.
+func (rb *ReconcilerBase[T, PT]) ReconciliationDelay(delay AdditionalReconciliationDelay) time.Duration {
+	if rb.timing != nil {
+		switch delay {
+		case StandardDelay:
+			return rb.timing.StandardDelay
+		case LongDelay:
+			return rb.timing.RetryDelay
+		case MonitoringDelay:
+			return rb.timing.MonitoringDelay
+		case NoDelay:
+			return 0
+		case TestDelay:
+			return delayDurations[TestDelay].Duration
+		default:
+			return rb.timing.StandardDelay
+		}
+	}
+	value, found := delayDurations[delay]
+	if !found {
+		value = delayDurations[StandardDelay]
+	}
+	return value.Duration
+}
+
+func (rb *ReconcilerBase[T, PT]) reconciliationDelayDuration(delay AdditionalReconciliationDelay) time.Duration {
+	if rb.timing != nil {
+		return rb.ReconciliationDelay(delay)
+	}
+	return delayDuration(delay)
 }
 
 // mapNamespaceToReconcileRequests maps a Namespace object to reconciliation
@@ -160,7 +208,7 @@ func (rb *ReconcilerBase[T, PT]) ScheduleReconciliationWithDelay(nn types.Namesp
 		select {
 		case <-rb.LifetimeCtx.Done():
 			return
-		case <-time.After(delayDuration(delay)):
+		case <-time.After(rb.reconciliationDelayDuration(delay)):
 			rb.ScheduleReconciliation(nn)
 		}
 	}()
@@ -280,7 +328,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 			return res, err
 		} else if (change & additionalReconciliationNeeded) != 0 {
 			log.V(1).Info(fmt.Sprintf("Scheduling additional reconciliation for %s...", kind))
-			delayDuration := delayDuration(delay)
+			delayDuration := rb.reconciliationDelayDuration(delay)
 			// To make additional reconciliation happen, the RequeueAfter value must be > 0.
 			if delayDuration == 0 {
 				delayDuration = time.Millisecond
