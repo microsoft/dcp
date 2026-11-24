@@ -605,6 +605,9 @@ func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, r
 	if listErr != nil {
 		return nil, fmt.Errorf("list owned physical containers: %w", listErr)
 	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &children.Items); resolveErr != nil {
+		return nil, resolveErr
+	}
 	var owned *apiv2.PhysicalContainer
 	for index := range children.Items {
 		child := &children.Items[index]
@@ -620,7 +623,6 @@ func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, r
 		owned = child
 	}
 	if owned != nil {
-		data.unobservedChildren.observeCached(owned)
 		if (data.physicalUID != "" && owned.UID != data.physicalUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
 			identityErr := fmt.Errorf("physical container %q UID or logical hold changed", owned.NamespacedName())
 			data.failMissing(identityErr.Error())
@@ -641,6 +643,9 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 	if listErr != nil {
 		return nil, fmt.Errorf("list owned physical images: %w", listErr)
 	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &children.Items); resolveErr != nil {
+		return nil, resolveErr
+	}
 	var owned *apiv2.PhysicalContainerImage
 	for index := range children.Items {
 		child := &children.Items[index]
@@ -656,7 +661,6 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 		owned = child
 	}
 	if owned != nil {
-		data.unobservedChildren.observeCached(owned)
 		if (data.imageUID != "" && owned.UID != data.imageUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
 			identityErr := fmt.Errorf("physical image %q UID or logical hold changed", owned.NamespacedName())
 			data.failMissing(identityErr.Error())

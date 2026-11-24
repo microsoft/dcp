@@ -399,6 +399,9 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkPhysical(
 		lookupErr := fmt.Errorf("list owned physical networks: %w", listErr)
 		return nil, lookupErr
 	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, network, data.unobservedChildren, &children.Items); resolveErr != nil {
+		return nil, resolveErr
+	}
 	var owned *apiv2.PhysicalContainerNetwork
 	for i := range children.Items {
 		child := &children.Items[i]
@@ -413,7 +416,6 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkPhysical(
 		owned = child
 	}
 	if owned != nil {
-		data.unobservedChildren.observeCached(owned)
 		if (data.physicalNetworkUID != "" && owned.UID != data.physicalNetworkUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
 			identityErr := fmt.Errorf("physical network %q UID or logical hold changed", owned.NamespacedName())
 			data.failMissing(identityErr.Error())
