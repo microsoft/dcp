@@ -181,3 +181,13 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 		t.Fatal("Timed out waiting for notification to be received by receiver 3 after receiver 1 disconnected")
 	}
 }
+
+// Verifies that ShutdownRequestedNotification survives conversion to and from its wire representation.
+func TestShutdownRequestedNotificationRoundTrip(t *testing.T) {
+	data, toDataErr := asNotificationData(&ShutdownRequestedNotification{})
+	require.NoError(t, toDataErr)
+
+	note, fromDataErr := asNotification(data)
+	require.NoError(t, fromDataErr)
+	require.Equal(t, NotificationKindShutdownRequested, note.Kind())
+}

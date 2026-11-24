@@ -27,8 +27,9 @@ import (
 type NotificationKind string
 
 const (
-	NotificationKindCleanupStarted   NotificationKind = "cleanup-started"
-	NotificationKindPerftraceRequest NotificationKind = "perftrace-request"
+	NotificationKindCleanupStarted    NotificationKind = "cleanup-started"
+	NotificationKindPerftraceRequest  NotificationKind = "perftrace-request"
+	NotificationKindShutdownRequested NotificationKind = "shutdown-requested"
 
 	NotificationSocketPathFlagName = "notification-socket"
 )
@@ -68,6 +69,15 @@ func (n *PerftraceRequestNotification) Kind() NotificationKind {
 	return NotificationKindPerftraceRequest
 }
 
+// ShutdownRequestedNotification asks the subscriber to shut down and exit.
+type ShutdownRequestedNotification struct{}
+
+var _ Notification = (*ShutdownRequestedNotification)(nil)
+
+func (n *ShutdownRequestedNotification) Kind() NotificationKind {
+	return NotificationKindShutdownRequested
+}
+
 func asNotificationData(n Notification) (*proto.NotificationData, error) {
 	if n == nil {
 		return nil, fmt.Errorf("nil notification")
@@ -78,6 +88,11 @@ func asNotificationData(n Notification) (*proto.NotificationData, error) {
 	case NotificationKindCleanupStarted:
 		return &proto.NotificationData{
 			Ntype: grpcutil.EnumVal(proto.NotificationType_NTYPE_CLEANUP_STARTED),
+		}, nil
+
+	case NotificationKindShutdownRequested:
+		return &proto.NotificationData{
+			Ntype: grpcutil.EnumVal(proto.NotificationType_NTYPE_SHUTDOWN_REQUESTED),
 		}, nil
 
 	case NotificationKindPerftraceRequest:
@@ -106,6 +121,9 @@ func asNotification(nd *proto.NotificationData) (Notification, error) {
 
 	case proto.NotificationType_NTYPE_CLEANUP_STARTED:
 		return &CleanupStartedNotification{}, nil
+
+	case proto.NotificationType_NTYPE_SHUTDOWN_REQUESTED:
+		return &ShutdownRequestedNotification{}, nil
 
 	case proto.NotificationType_NTYPE_PERFTRACE_REQUEST:
 		ptr := nd.GetPerftraceRequest()
