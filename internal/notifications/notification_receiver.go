@@ -92,15 +92,21 @@ func (nr *notificationReceiver) receiveNotifications(conn *grpc.ClientConn) {
 			}
 
 			if recvErr != nil {
+				// Any other error aborts the stream, and Recv will keep returning the same error.
+				// Returning here lets receiveLoop establish a new stream.
 				nr.log.Error(recvErr, "Failed to receive notification from stream")
-				time.Sleep(b.NextBackOff())
-				continue
+				return
 			}
 
 			n, convErr := asNotification(nd)
 			if convErr != nil {
 				nr.log.Error(convErr, "Received notification is not valid")
-				time.Sleep(b.NextBackOff())
+				select {
+				case <-nr.lifetimeCtx.Done():
+					return
+				case <-time.After(b.NextBackOff()):
+					// Try again with the next notification.
+				}
 				continue
 			}
 
