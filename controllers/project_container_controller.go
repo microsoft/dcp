@@ -17,7 +17,6 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -543,51 +542,6 @@ func handleProjectContainerUnknown(
 	return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log) | additionalReconciliationNeeded
 }
 
-func (r *ProjectContainerReconciler) listProjectPhysicalResources(
-	ctx context.Context, resource *apiv2.ProjectContainer, reader ctrl_client.Reader, list ctrl_client.ObjectList, options ...ctrl_client.ListOption,
-) ([]ctrl_client.Object, error) {
-	listOptions := append([]ctrl_client.ListOption{ctrl_client.InNamespace(resource.Namespace)}, options...)
-	if listErr := reader.List(ctx, list, listOptions...); listErr != nil {
-		return nil, fmt.Errorf("list project physical resources: %w", listErr)
-	}
-	return projectPhysicalResourceItems(resource, list)
-}
-
-func projectPhysicalResourceItems(resource *apiv2.ProjectContainer, list ctrl_client.ObjectList) ([]ctrl_client.Object, error) {
-	items, extractErr := apimeta.ExtractList(list)
-	if extractErr != nil {
-		return nil, fmt.Errorf("extract project physical resources: %w", extractErr)
-	}
-	var children []ctrl_client.Object
-	for _, item := range items {
-		child, valid := item.(ctrl_client.Object)
-		if !valid {
-			return nil, fmt.Errorf("invalid project physical resource type %T", item)
-		}
-		if metav1.IsControlledBy(child, resource) {
-			children = append(children, child)
-		}
-	}
-	return children, nil
-}
-
-func (r *ProjectContainerReconciler) findProjectPhysicalResource(
-	ctx context.Context, resource *apiv2.ProjectContainer, list ctrl_client.ObjectList,
-) (ctrl_client.Object, error) {
-	children, listErr := r.listProjectPhysicalResources(ctx, resource, r.Client, list,
-		ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)})
-	if listErr != nil {
-		return nil, listErr
-	}
-	if len(children) > 1 {
-		return nil, fmt.Errorf("%w: %T", errMultipleProjectPhysicalResources, list)
-	}
-	if len(children) == 0 {
-		return nil, nil
-	}
-	return children[0], nil
-}
-
 func (r *ProjectContainerReconciler) observeProjectContainer(
 	ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData,
 ) (*apiv2.PhysicalContainer, objectChange, error) {
@@ -645,83 +599,86 @@ func (r *ProjectContainerReconciler) observeProjectContainer(
 }
 
 func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData) (*apiv2.PhysicalContainer, error) {
-	observed, getErr := r.findProjectPhysicalResource(ctx, resource, &apiv2.PhysicalContainerList{})
-	if getErr != nil {
-		if errors.Is(getErr, errMultipleProjectPhysicalResources) {
-			data.failMissing(getErr.Error())
-		}
-		return nil, getErr
+	var children apiv2.PhysicalContainerList
+	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)})
+	if listErr != nil {
+		return nil, fmt.Errorf("list owned physical containers: %w", listErr)
 	}
-	if observed == nil {
-		physical := &apiv2.PhysicalContainer{}
-		name := types.NamespacedName{Namespace: resource.Namespace, Name: projectContainerPhysicalName(resource)}
-		lookupErr := r.NoCacheClient.Get(ctx, name, physical)
-		if apierrors.IsNotFound(lookupErr) {
-			return nil, nil
+	var owned *apiv2.PhysicalContainer
+	for index := range children.Items {
+		child := &children.Items[index]
+		if !metav1.IsControlledBy(child, resource) {
+			continue
 		}
-		if lookupErr != nil {
-			return nil, fmt.Errorf("get Project physical container: %w", lookupErr)
+		if owned != nil {
+			multipleErr := fmt.Errorf("%w: more than one PhysicalContainer belongs to %q",
+				errMultipleProjectPhysicalResources, resource.NamespacedName())
+			data.failMissing(multipleErr.Error())
+			return nil, multipleErr
 		}
-		observed = physical
-	} else {
-		data.unobservedChildren.observeCached(observed.(*apiv2.PhysicalContainer))
+		owned = child
 	}
-	physical := observed.(*apiv2.PhysicalContainer)
-	if !metav1.IsControlledBy(physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) ||
-		!hasFinalizer(physical, LogicalPhysicalHoldFinalizer) {
-		identityErr := fmt.Errorf("physical container %q owner, UID, or logical hold changed", physical.NamespacedName())
-		data.failMissing(identityErr.Error())
-		return nil, identityErr
+	if owned != nil {
+		data.unobservedChildren.observeCached(owned)
+		if (data.physicalUID != "" && owned.UID != data.physicalUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
+			identityErr := fmt.Errorf("physical container %q UID or logical hold changed", owned.NamespacedName())
+			data.failMissing(identityErr.Error())
+			return nil, identityErr
+		}
+		data.physicalUID, data.physicalName = owned.UID, owned.Name
 	}
-	data.physicalUID, data.physicalName = physical.UID, physical.Name
-	return physical, nil
+	return owned, nil
 }
 
 func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData) (*apiv2.PhysicalContainerImage, error) {
 	if resource.Spec.Container.Image == nil {
 		return nil, nil
 	}
-	observed, getErr := r.findProjectPhysicalResource(ctx, resource, &apiv2.PhysicalContainerImageList{})
-	if getErr != nil {
-		if errors.Is(getErr, errMultipleProjectPhysicalResources) {
-			data.failMissing(getErr.Error())
-		}
-		return nil, getErr
+	var children apiv2.PhysicalContainerImageList
+	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)})
+	if listErr != nil {
+		return nil, fmt.Errorf("list owned physical images: %w", listErr)
 	}
-	if observed == nil {
-		image := &apiv2.PhysicalContainerImage{}
-		name := types.NamespacedName{Namespace: resource.Namespace, Name: projectContainerPhysicalName(resource)}
-		lookupErr := r.NoCacheClient.Get(ctx, name, image)
-		if apierrors.IsNotFound(lookupErr) {
-			return nil, nil
+	var owned *apiv2.PhysicalContainerImage
+	for index := range children.Items {
+		child := &children.Items[index]
+		if !metav1.IsControlledBy(child, resource) {
+			continue
 		}
-		if lookupErr != nil {
-			return nil, fmt.Errorf("get Project physical image: %w", lookupErr)
+		if owned != nil {
+			multipleErr := fmt.Errorf("%w: more than one PhysicalContainerImage belongs to %q",
+				errMultipleProjectPhysicalResources, resource.NamespacedName())
+			data.failMissing(multipleErr.Error())
+			return nil, multipleErr
 		}
-		observed = image
-	} else {
-		data.unobservedChildren.observeCached(observed.(*apiv2.PhysicalContainerImage))
+		owned = child
 	}
-	image := observed.(*apiv2.PhysicalContainerImage)
-	if !metav1.IsControlledBy(image, resource) || (data.imageUID != "" && image.UID != data.imageUID) ||
-		!hasFinalizer(image, LogicalPhysicalHoldFinalizer) {
-		identityErr := fmt.Errorf("physical image %q owner, UID, or logical hold changed", image.NamespacedName())
-		data.failMissing(identityErr.Error())
-		return nil, identityErr
+	if owned != nil {
+		data.unobservedChildren.observeCached(owned)
+		if (data.imageUID != "" && owned.UID != data.imageUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
+			identityErr := fmt.Errorf("physical image %q UID or logical hold changed", owned.NamespacedName())
+			data.failMissing(identityErr.Error())
+			return nil, identityErr
+		}
+		data.imageUID, data.imageName = owned.UID, owned.Name
 	}
-	data.imageUID, data.imageName = image.UID, image.Name
-	return image, nil
+	return owned, nil
 }
 
 func applyProjectContainerImageLogs(resource *apiv2.ProjectContainer, image *apiv2.PhysicalContainerImage) objectChange {
 	if image == nil {
 		return noChange
 	}
+
 	source := image.GetLogSource()
+
 	if !reflect.DeepEqual(resource.Status.StartupLogs, source) {
 		resource.Status.StartupLogs = source
 		return statusChanged
 	}
+
 	return noChange
 }
 
@@ -740,6 +697,7 @@ func (r *ProjectContainerReconciler) handleDeletionRequest(
 		}
 		r.projects.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
+
 	defer func() {
 		if data != nil {
 			_ = r.projects.Update(resource.NamespacedName(), resource.UID, data)
@@ -750,11 +708,13 @@ func (r *ProjectContainerReconciler) handleDeletionRequest(
 			}
 		}
 	}()
+
 	// Endpoints are withdrawn before waiting for debug sessions so deletion stops routing immediately.
 	endpointsDeleted, endpointDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, projectContainerOwnerUIDField, data.unobservedChildren)
 	if endpointDeleteErr != nil {
 		log.Error(endpointDeleteErr, "Failed to delete Project endpoints")
 	}
+
 	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
 		return additionalReconciliationNeeded, delay
 	}
@@ -768,68 +728,98 @@ func (r *ProjectContainerReconciler) handleDeletionRequest(
 	if !cleaned || !endpointsDeleted || endpointDeleteErr != nil {
 		return additionalReconciliationNeeded, delay
 	}
+
 	return deleteFinalizer(resource, projectContainerFinalizer, log), delay
 }
 
 func (r *ProjectContainerReconciler) cleanupProjectPhysicalResources(
 	ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData, log logr.Logger,
 ) (bool, error) {
-	for _, group := range []struct {
-		list      ctrl_client.ObjectList
-		finalizer string
-	}{
-		{&apiv2.PhysicalContainerList{}, physicalContainerFinalizer},
-		{&apiv2.PhysicalContainerImageList{}, physicalContainerImageFinalizer},
-	} {
-		children, listErr := r.listProjectPhysicalResources(ctx, resource, r.Client, group.list,
-			ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)})
-		if listErr == nil {
-			switch list := group.list.(type) {
-			case *apiv2.PhysicalContainerList:
-				listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &list.Items)
-			case *apiv2.PhysicalContainerImageList:
-				listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &list.Items)
-			}
-			if listErr == nil {
-				children, listErr = projectPhysicalResourceItems(resource, group.list)
-			}
-		}
-		if listErr != nil {
-			log.Error(listErr, "Failed to verify Project physical resources before deletion")
-			return false, listErr
-		}
-		if len(children) == 0 {
-			continue
-		}
-		var cleanupErr error
-		for _, physicalResource := range children {
-			if physical, isContainer := physicalResource.(*apiv2.PhysicalContainer); isContainer &&
-				resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
+	options := []ctrl_client.ListOption{ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)}}
+
+	var physicals apiv2.PhysicalContainerList
+	if listErr := r.List(ctx, &physicals, options...); listErr != nil {
+		log.Error(listErr, "Failed to list Project physical containers before deletion")
+		return false, listErr
+	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &physicals.Items); resolveErr != nil {
+		log.Error(resolveErr, "Failed to resolve unobserved Project physical containers before deletion")
+		return false, resolveErr
+	}
+	if len(physicals.Items) != 0 {
+		waiting := false
+		for i := range physicals.Items {
+			physical := &physicals.Items[i]
+			if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
 				(data.physicalUID == "" || data.physicalUID == physical.UID) {
 				data.finishedAt = physical.Status.FinishedAt
 				data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
 			}
-			if physicalResource.GetDeletionTimestamp().IsZero() {
-				uid := physicalResource.GetUID()
-				deleteErr := r.Delete(ctx, physicalResource, ctrl_client.Preconditions{UID: &uid})
-				if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-					log.Error(deleteErr, "Failed to delete Project physical resource")
-					cleanupErr = errors.Join(cleanupErr, deleteErr)
-				}
-				continue
+			if deleteErr := r.deleteProjectPhysicalResource(ctx, physical); deleteErr != nil {
+				log.Error(deleteErr, "Failed to request Project physical container deletion", "PhysicalContainer", physical.NamespacedName())
+				waiting = true
 			}
-			if hasFinalizer(physicalResource, group.finalizer) {
-				continue
-			}
-			releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physicalResource)
-			if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-				log.Error(releaseErr, "Failed to release Project physical resource")
-				cleanupErr = errors.Join(cleanupErr, releaseErr)
+			if physical.DeletionTimestamp.IsZero() || hasFinalizer(physical, physicalContainerFinalizer) {
+				waiting = true
 			}
 		}
-		return false, cleanupErr
+		if !waiting {
+			for i := range physicals.Items {
+				physical := &physicals.Items[i]
+				releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physical)
+				if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
+					log.Error(releaseErr, "Failed to release Project physical container", "PhysicalContainer", physical.NamespacedName())
+				}
+			}
+		}
+		return false, nil
+	}
+
+	var images apiv2.PhysicalContainerImageList
+	if listErr := r.List(ctx, &images, options...); listErr != nil {
+		log.Error(listErr, "Failed to list Project physical images before deletion")
+		return false, listErr
+	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &images.Items); resolveErr != nil {
+		log.Error(resolveErr, "Failed to resolve unobserved Project physical images before deletion")
+		return false, resolveErr
+	}
+	if len(images.Items) != 0 {
+		waiting := false
+		for i := range images.Items {
+			image := &images.Items[i]
+			if deleteErr := r.deleteProjectPhysicalResource(ctx, image); deleteErr != nil {
+				log.Error(deleteErr, "Failed to request Project physical image deletion", "PhysicalContainerImage", image.NamespacedName())
+				waiting = true
+			}
+			if image.DeletionTimestamp.IsZero() || hasFinalizer(image, physicalContainerImageFinalizer) {
+				waiting = true
+			}
+		}
+		if !waiting {
+			for i := range images.Items {
+				image := &images.Items[i]
+				releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, image)
+				if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
+					log.Error(releaseErr, "Failed to release Project physical image", "PhysicalContainerImage", image.NamespacedName())
+				}
+			}
+		}
+		return false, nil
 	}
 	return true, nil
+}
+
+func (r *ProjectContainerReconciler) deleteProjectPhysicalResource(ctx context.Context, resource ctrl_client.Object) error {
+	if resource.GetDeletionTimestamp().IsZero() {
+		uid := resource.GetUID()
+		deleteErr := r.Delete(ctx, resource, ctrl_client.Preconditions{UID: &uid})
+		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+			return fmt.Errorf("delete physical resource: %w", deleteErr)
+		}
+	}
+	return nil
 }
 
 // handleProjectContainerStopping observes the stopped physical container; manageProject forwards the stop request.

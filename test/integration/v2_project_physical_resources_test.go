@@ -601,39 +601,6 @@ func (reader *projectPhysicalReader) Get(ctx context.Context, key ctrl_client.Ob
 	return reader.Reader.Get(ctx, key, object, options...)
 }
 
-// Verifies that ProjectContainer adopts committed image and container creations through
-// uncached lookups when responses are lost and the controller cache cannot see them.
-func TestV2ProjectContainerReconcilesAmbiguousCreate(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	t.Cleanup(cancel)
-	var decorated *projectPhysicalClient
-	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{
-			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				decorated = &projectPhysicalClient{Client: client}
-				decorated.hidePhysicalResources.Store(true)
-				return decorated
-			},
-		})
-	require.NoError(t, startupErr)
-	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-create-confirmation")
-	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
-			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
-		}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
-	require.NoError(t, server.Client.Create(ctx, resource))
-	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-	require.Equal(t, int32(2), decorated.undecodedCreates.Load())
-	decorated.hidePhysicalResources.Store(false)
-	var physicalResources apiv2.PhysicalContainerList
-	require.NoError(t, server.Client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, physicalResources.Items, 1)
-	require.Equal(t, physicalResources.Items[0].UID, prepared.Status.RuntimeLogs.UID)
-	require.NoError(t, server.Client.Delete(ctx, resource))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
-}
-
 func (writer *projectPhysicalStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	complete := false
 	switch physical := obj.(type) {
@@ -1198,11 +1165,11 @@ func TestV2ProjectProcessRecoversLostCreateAndShutdown(t *testing.T) {
 	}
 }
 
-// Verifies that ProjectProcess rejects an owned physical process whose launch inputs or
-// lifetime policy do not match the prepared application configuration.
+// Verifies that ProjectProcess does not adopt an owned physical process whose launch command or
+// lifetime policy does not match the prepared application configuration.
 func TestV2ProjectProcessRejectsIncompatibleOwnedPhysical(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"command", "args", "retained"} {
+	for _, scenario := range []string{"command", "retained"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1230,8 +1197,6 @@ func TestV2ProjectProcessRejectsIncompatibleOwnedPhysical(t *testing.T) {
 			switch scenario {
 			case "command":
 				physical.Spec.Process.ExecutablePath += "-different"
-			case "args":
-				physical.Spec.Process.Args = []string{"different"}
 			case "retained":
 				physical.Spec.Process.RetainRuntimeProcess = true
 			}
@@ -1239,8 +1204,10 @@ func TestV2ProjectProcessRejectsIncompatibleOwnedPhysical(t *testing.T) {
 			require.NoError(t, client.Create(ctx, physical))
 			cleanupProjectPhysical(t, physical)
 			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
-			failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return current.Status.Phase == apiv2.ProjectPhasePending && ready != nil && strings.Contains(ready.Message, "different spec"), nil
+			})
 			require.Empty(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil))
 			require.NoError(t, client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)

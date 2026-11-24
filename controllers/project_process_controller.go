@@ -274,17 +274,6 @@ func (r *ProjectProcessReconciler) findProjectProcess(
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}
-	actual, expected := physical.Spec.DeepCopy(), projectProcessPhysicalSpec(resource, data)
-	actual.Stop, expected.Stop = false, false
-	if !data.inputsPrepared && actual.Process != nil {
-		expected.Process.Args = slices.Clone(actual.Process.Args)
-		expected.Process.Env = slices.Clone(actual.Process.Env)
-	}
-	if !reflect.DeepEqual(*actual, expected) {
-		specErr := fmt.Errorf("physical process %q has a different spec", physical.NamespacedName())
-		data.failMissing(specErr.Error())
-		return nil, specErr
-	}
 	data.physicalUID, data.physicalName = physical.UID, physical.Name
 	return physical, nil
 }
@@ -298,13 +287,17 @@ func (r *ProjectProcessReconciler) createProjectProcess(
 	}
 	return createPhysicalResource(ctx, r.Client, r.NoCacheClient, resource, physical, physicalProcessFinalizer,
 		&data.physicalUID, &data.unobservedChildren, func(existing *apiv2.PhysicalProcess) error {
-			actual, expected := existing.Spec.DeepCopy(), physical.Spec.DeepCopy()
-			actual.Stop, expected.Stop = false, false
-			if !reflect.DeepEqual(actual, expected) {
-				return fmt.Errorf("physical process %q has a different spec", existing.NamespacedName())
-			}
-			return nil
+			return validateProjectProcessSpec(existing, physical.Spec)
 		})
+}
+
+func validateProjectProcessSpec(existing *apiv2.PhysicalProcess, spec apiv2.PhysicalProcessSpec) error {
+	actual, expected := existing.Spec.DeepCopy(), spec.DeepCopy()
+	actual.Stop, expected.Stop = false, false
+	if !reflect.DeepEqual(actual, expected) {
+		return fmt.Errorf("physical process %q has a different spec", existing.NamespacedName())
+	}
+	return nil
 }
 
 func (data *projectProcessData) observePhysical(physical *apiv2.PhysicalProcess) {
@@ -397,19 +390,15 @@ func handleProjectProcessPending(
 			return additionalReconciliationNeeded
 		}
 		if physical != nil {
-			if !data.inputsPrepared {
-				if len(projectProcessPortRequests(resource)) != 0 {
-					data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonLookupFailed,
-						"Cannot recover the prepared service port selections for the existing process."
-					return additionalReconciliationNeeded
-				}
-				if physical.Spec.Process == nil {
-					data.failMissing("The owned PhysicalProcess does not contain a process configuration.")
-					return noChange
-				}
+			if physical.Spec.Process != nil {
 				data.effectiveArgs = slices.Clone(physical.Spec.Process.Args)
 				data.effectiveEnv = slices.Clone(physical.Spec.Process.Env)
 				data.inputsPrepared = true
+			}
+			if specErr := validateProjectProcessSpec(physical, projectProcessPhysicalSpec(resource, data)); specErr != nil {
+				log.Error(specErr, "Failed to recover Project physical process")
+				data.message = specErr.Error()
+				return additionalReconciliationNeeded
 			}
 			data.state = projectStateCreating
 			return additionalReconciliationNeeded
