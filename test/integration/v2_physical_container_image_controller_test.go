@@ -12,14 +12,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
@@ -1737,6 +1742,70 @@ func TestV2PhysicalContainerImageControllerFailsUnresolvedImageOnDeletion(t *tes
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
 	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, server.Client, cancelled))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+}
+
+// imageFinalizerConflictClient rejects the first finalizer-removal patch of a deleting image without applying it, and
+// records any Failed status written while the image is being deleted.
+type imageFinalizerConflictClient struct {
+	ctrl_client.Client
+	conflicted     atomic.Bool
+	failedOnDelete atomic.Bool
+}
+
+func (client *imageFinalizerConflictClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
+	if image, isImage := obj.(*apiv2.PhysicalContainerImage); isImage && !image.DeletionTimestamp.IsZero() &&
+		!slices.Contains(image.Finalizers, apiv2.GroupName+"/physicalcontainerimage-reconciler") &&
+		client.conflicted.CompareAndSwap(false, true) {
+		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "physicalcontainerimages"},
+			image.Name, errors.New("injected finalizer removal conflict"))
+	}
+	return client.Client.Patch(ctx, obj, patch, options...)
+}
+
+func (client *imageFinalizerConflictClient) Status() ctrl_client.SubResourceWriter {
+	return &imageFinalizerConflictStatusWriter{SubResourceWriter: client.Client.Status(), client: client}
+}
+
+type imageFinalizerConflictStatusWriter struct {
+	ctrl_client.SubResourceWriter
+	client *imageFinalizerConflictClient
+}
+
+func (writer *imageFinalizerConflictStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
+	if image, isImage := obj.(*apiv2.PhysicalContainerImage); isImage && !image.DeletionTimestamp.IsZero() &&
+		image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
+		writer.client.failedOnDelete.Store(true)
+	}
+	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
+}
+
+// Verifies that a resolved PhysicalContainerImage whose finalizer removal is retried after a conflict completes deletion
+// without reporting AcquisitionCancelled.
+func TestV2PhysicalContainerImageControllerRetriesFinalizerRemovalWithoutCancellingResolvedImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *imageFinalizerConflictClient
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalContainerImageController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			decorated = &imageFinalizerConflictClient{Client: apiClient}
+			return decorated
+		}})
+	require.NoError(t, startErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-pci-finalizer-conflict")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "resolved-image", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-finalizer-conflict-source"}},
+	}
+	require.NoError(t, server.Client.Create(ctx, image))
+	waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+
+	require.NoError(t, server.Client.Delete(ctx, image))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+	require.True(t, decorated.conflicted.Load(), "the finalizer removal conflict was not injected")
+	require.False(t, decorated.failedOnDelete.Load(), "a resolved image must not be reported as cancelled")
 }
 
 // Verifies that PhysicalContainerImage cancels acquisition and publishes completed logs on

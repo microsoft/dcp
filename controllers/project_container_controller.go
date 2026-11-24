@@ -900,8 +900,8 @@ func (r *ProjectContainerReconciler) forwardProjectStop(
 	update := physical.DeepCopy()
 	update.Spec.Stop = true
 	if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
+		// The retry is reported through logs so a terminal Project keeps its outcome message.
 		log.Error(stopErr, "Failed to forward Project stop request")
-		data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
 	}
 	return additionalReconciliationNeeded
 }

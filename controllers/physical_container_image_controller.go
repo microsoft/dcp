@@ -241,17 +241,11 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if !image.DeletionTimestamp.IsZero() && !data.operationInProgress() {
-		// Owners that still hold the image observe a terminal outcome when it was never resolved. Without in-memory
-		// state, only an image whose deletion this controller has not yet finished is still unresolved.
-		if data == nil && hasFinalizer(&image, physicalContainerImageFinalizer) {
-			data = &physicalContainerImageData{}
-			data.cancelUnresolvedAcquisition()
-			r.imageData.Store(image.NamespacedName(), physicalContainerImageDataKey(&image), data.Clone())
-		} else if data != nil {
+		// Owners that still hold the image observe a terminal outcome when it was never resolved. Missing in-memory
+		// state means deletion work already finished, as for other physical resources, so nothing is reported.
+		if data != nil {
 			data.cancelUnresolvedAcquisition()
 			_ = r.imageData.Update(image.NamespacedName(), physicalContainerImageDataKey(&image), data)
-		}
-		if data != nil {
 			dataChange, _, valid := data.applyTo(&image)
 			change |= dataChange
 			if !valid {

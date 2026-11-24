@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -645,17 +647,48 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 	require.Len(t, inspectedNetworks, 1)
 }
 
+// inspectionGateOrchestrator holds inspection of one network until released, signalling when inspection starts.
+type inspectionGateOrchestrator struct {
+	containers.ContainerOrchestrator
+	network string
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (orchestrator *inspectionGateOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	if slices.Contains(options.Networks, orchestrator.network) {
+		orchestrator.once.Do(func() { close(orchestrator.entered) })
+		select {
+		case <-orchestrator.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return orchestrator.ContainerOrchestrator.InspectNetworks(ctx, options)
+}
+
 // Verifies that an ambiguous network create error is reported before inspection, then subsequent
 // reconciliation verifies the owned network and adopts it without issuing another create.
 func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	t.Cleanup(cancel)
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-create-uncertain")
 	networkName := "v2-pcn-create-uncertain-runtime"
-	removeRuntimeNetworkOnCleanup(t, networkName)
-	containerOrchestrator.FailNextCreateNetworkAfterCreation(networkName, errors.New("simulated lost create response"))
+	var orchestrator *ctrl_testutil.TestContainerOrchestrator
+	gate := &inspectionGateOrchestrator{network: networkName, entered: make(chan struct{}), release: make(chan struct{})}
+	releaseInspection := sync.OnceFunc(func() { close(gate.release) })
+	t.Cleanup(releaseInspection)
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalContainerNetworkController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateContainerOrchestrator: func(original containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
+			orchestrator = original.(*ctrl_testutil.TestContainerOrchestrator)
+			gate.ContainerOrchestrator = original
+			return gate
+		}})
+	require.NoError(t, startErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-pcn-create-uncertain")
+	orchestrator.FailNextCreateNetworkAfterCreation(networkName, errors.New("simulated lost create response"))
 
 	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -666,21 +699,32 @@ func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFa
 			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
-	require.NoError(t, client.Create(ctx, network))
+	require.NoError(t, server.Client.Create(ctx, network))
 
-	failedAttempt := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+	// The retry's inspection is held, so the reported failure remains observable before any inspection completes.
+	select {
+	case <-gate.entered:
+	case <-ctx.Done():
+		t.Fatal("retry did not inspect the network")
+	}
+	failedAttempt := waitObjectAssumesStateEx(t, ctx, server.Client, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return current.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
 			ready != nil && ready.Reason == string(apiv2.PhysicalContainerNetworkReasonCreateFailed), nil
 	})
 	require.Contains(t, failedAttempt.Status.Conditions[0].Message, "simulated lost create response")
 	require.Empty(t, failedAttempt.Status.NetworkID)
-	require.Zero(t, containerOrchestrator.InspectNetworkCallCount(networkName))
-	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
-	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(networkName))
+
+	releaseInspection()
+	readyNetwork := waitObjectAssumesStateEx(t, ctx, server.Client, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
+	})
 	require.NotEmpty(t, readyNetwork.Status.NetworkID)
 	require.Equal(t, networkName, readyNetwork.Status.NetworkName)
-	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(networkName))
+	require.NoError(t, server.Client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, network)
 }
 
 // Verifies that PhysicalContainerNetwork preserves a missing runtime's identity and details,
