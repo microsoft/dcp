@@ -501,9 +501,13 @@ type ProjectCommonStatus struct {
 	// Phase summarizes Project preparation, execution, debug activity and shutdown.
 	// +kubebuilder:validation:Enum=Pending;Ready;Active;Exited;Stopping;Stopped;Unknown;Failed
 	Phase ProjectPhase `json:"phase,omitempty"`
-	// FinishedAt is the observed completion time of the directly launched application.
+	// FinishedAt is when the run ended: when the physical container's primary process exited (the application in
+	// direct mode, the adapter in adapter mode), when the direct-mode physical process exited, or when the main debug
+	// session of an adapter-mode ProjectProcess ended.
 	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
-	// ExitCode is the directly launched application's exit code, when available.
+	// ExitCode is the exit code of the physical container's primary process (the application in direct mode, the
+	// adapter in adapter mode) or of the direct-mode physical process, when available. It is not set for adapter-mode
+	// ProjectProcess runs, whose adapter-launched applications DCP does not own.
 	ExitCode *int32 `json:"exitCode,omitempty"`
 	// RuntimeLogs describes capture owned by the immediate physical execution.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
