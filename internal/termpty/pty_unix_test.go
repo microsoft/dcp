@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/termpty"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -289,4 +290,38 @@ func TestStartProcessWithTerminal_FailsForNonexistentBinary(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, ptp)
 	require.Contains(t, err.Error(), "failed to start process")
+}
+
+// Verifies that PseudoTerminalProcess.Stop cleans surviving group members after the terminal's leader is reaped.
+func TestPseudoTerminalProcessStopCleansGroupAfterLeaderExit(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+	executor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
+	t.Cleanup(executor.Dispose)
+	delayPath, delayPathErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	terminalProcess, startErr := termpty.StartProcessWithTerminal(ctx, executor, &termpty.CommandSpec{
+		Cmd: exec.Command(delayPath, "--delay=120s", "--child-spec=1", "--couple-children"),
+	})
+	require.NoError(t, startErr)
+	t.Cleanup(func() {
+		require.NoError(t, terminalProcess.PTY.Close())
+	})
+	terminalProcess.StartWaitForExit()
+	internal_testutil.EnsureProcessTree(t, terminalProcess.Handle, 2, defaultTestTimeout)
+	tree, treeErr := process.GetProcessTree(ctx, terminalProcess.Handle)
+	require.NoError(t, treeErr)
+	require.Len(t, tree, 2)
+	member := tree[1]
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+		defer cleanupCancel()
+		cleanupErr := executor.StopProcess(cleanupCtx, member, process.StopRootOnly())
+		require.True(t, cleanupErr == nil || process.IsProcessGoneErr(cleanupErr), "could not clean up delay member: %v", cleanupErr)
+	})
+	require.NoError(t, executor.StopProcess(ctx, terminalProcess.Handle, process.StopRootOnly()))
+	require.NoError(t, executor.CheckProcessRunning(member))
+	require.NoError(t, terminalProcess.Stop(ctx))
+	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(member)))
 }

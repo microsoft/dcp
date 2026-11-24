@@ -61,7 +61,8 @@ func (ptp *PseudoTerminalProcess) Stop(ctx context.Context, options ...process.P
 	if ptp.Executor == nil {
 		return errors.New("process executor is not available, cannot stop process") // Should never happen
 	}
-	return ptp.Executor.StopProcess(ctx, ptp.Handle, options...)
+	stopOptions := append([]process.ProcessStopOption{process.StopWithProcessGroup()}, options...)
+	return ptp.Executor.StopProcess(ctx, ptp.Handle, stopOptions...)
 }
 
 // CommandSpec captures data needed to spawn a command attached to a freshly allocated pseudo-terminal.

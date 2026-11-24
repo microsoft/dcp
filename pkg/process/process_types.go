@@ -65,15 +65,27 @@ const (
 type ProcessStopOption func(*processStopOptions)
 
 type processStopOptions struct {
-	opts          processStoppingOpts
-	afterRootExit func()
+	opts             processStoppingOpts
+	afterRootExit    func()
+	knownGroupLeader bool
 }
 
 // StopRootOnly skips descendant enumeration and cleanup after stopping the requested process.
-// Descendants may still receive signals sent to a shared console or process group.
+// It also skips Unix process group cleanup. Descendants may still receive shared-console signals on Windows.
 func StopRootOnly() ProcessStopOption {
 	return func(options *processStopOptions) {
 		options.opts |= optSkipDescendants
+	}
+}
+
+// StopWithProcessGroup identifies the process being stopped as a known isolated Unix group leader.
+// The process handle also identifies the group, so cleanup does not require the leader to remain alive.
+// Graceful group completion leaves the remaining graceful-stop budget for tree survivors.
+// If the group exhausts that budget, all survivors are force-killed, including descendants outside the group.
+// This option has no effect on Windows.
+func StopWithProcessGroup() ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.knownGroupLeader = true
 	}
 }
 
@@ -124,6 +136,7 @@ type ExitCodeSource interface {
 type Executor interface {
 	// Starts the process described by given command instance.
 	// When the passed context is cancelled, the process is automatically terminated.
+	// Unix children get a dedicated process group unless the command specifies group or session setup.
 	//
 	// If the standard library's exec package does not provide necessary functionality,
 	// the sysCreateProcess function can be used to create the process using a different approach.
@@ -143,6 +156,7 @@ type Executor interface {
 	// A positive PID and nonzero identity time are required. Cancellation ends further stopping work.
 	// ErrIncompleteProcessTree is returned when enumeration or descendant cleanup is uncertain,
 	// even if the root and all verified descendants were stopped.
+	// On Unix, cleanup also targets the process group if the process leads an isolated group.
 	StopProcess(ctx context.Context, handle ProcessHandle, options ...ProcessStopOption) error
 
 	// Checks that the process identified by the given ProcessHandle is running.
@@ -155,6 +169,7 @@ type Executor interface {
 
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.
+	// Unix process group isolation is the same as for StartProcess.
 	StartAndForget(cmd *exec.Cmd, creationFlags ProcessCreationFlag) (handle ProcessHandle, err error)
 
 	// Disposes the executor. Processes started with CreationFlagEnsureKillOnDispose will be terminated.

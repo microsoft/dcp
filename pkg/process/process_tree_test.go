@@ -266,5 +266,7 @@ func TestIdentityToleranceAndGoneClassification(t *testing.T) {
 	require.ErrorIs(t, validateIdentity(actual, NewHandle(actual.Pid, time.Time{})), ErrProcessIdentityUnavailable)
 	require.False(t, IsProcessGoneErr(errors.Join(ErrorProcessNotFound, os.ErrPermission)))
 	require.False(t, IsProcessGoneErr(fmt.Errorf("inspection: %w", errors.Join(ErrProcessIdentityMismatch, context.Canceled))))
+	require.False(t, IsProcessGoneErr(errors.Join(ErrProcessIdentityMismatch, ErrIncompleteProcessTree)))
+	require.False(t, IsProcessGoneErr(errors.Join(ErrProcessIdentityMismatch, ErrProcessIdentityUnavailable)))
 	require.True(t, IsProcessGoneErr(errors.Join(ErrorProcessNotFound, ErrProcessIdentityMismatch)))
 }

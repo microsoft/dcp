@@ -102,6 +102,10 @@ func parseLinuxProcessStat(contents []byte, frequency uint64) (processInfo, erro
 	if parentErr != nil {
 		return processInfo{}, fmt.Errorf("invalid parent pid: %w", parentErr)
 	}
+	groupID, groupErr := StringToPidT(string(fields[2]))
+	if groupErr != nil {
+		return processInfo{}, fmt.Errorf("invalid process group id: %w", groupErr)
+	}
 	ticks, ticksErr := strconv.ParseUint(string(fields[19]), 10, 64)
 	if ticksErr != nil {
 		return processInfo{}, fmt.Errorf("invalid start ticks: %w", ticksErr)
@@ -113,6 +117,7 @@ func parseLinuxProcessStat(contents []byte, frequency uint64) (processInfo, erro
 	return processInfo{
 		handle:    NewHandle(pid, identityTime),
 		parentPID: parentPID,
+		groupID:   groupID,
 		birth:     ticks,
 		exited:    string(fields[0]) == "Z" || string(fields[0]) == "X" || string(fields[0]) == "x",
 	}, nil

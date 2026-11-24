@@ -101,7 +101,7 @@ func (wco *WslcCliOrchestrator) watchEvents(
 		return
 	}
 
-	dcpproc.RunProcessWatcher(wco.executor, handle, wco.log)
+	dcpproc.RunProcessWatcher(wco.executor, handle, true, wco.log)
 	startWaitForExit()
 
 	select {

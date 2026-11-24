@@ -520,11 +520,7 @@ func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe 
 	}
 
 	if ptp.Handle.Pid != 0 && ptp.Handle.Pid != process.UnknownPID {
-		// Only attempt to stop the attach process if it has not already
-		// exited. The exit handler may already have fired (e.g., the
-		// container itself exited and the OS noticed the attach process
-		// exit first), and a second invocation of pe.StopProcess could
-		// race with the underlying handler and double-signal it.
+		// Unix group members may outlive the attach process; Windows keeps its process-only exit shortcut.
 		alreadyExited := false
 		if ptp.ExitHandler != nil {
 			select {
@@ -533,9 +529,9 @@ func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe 
 			default:
 			}
 		}
-		if !alreadyExited {
+		if !alreadyExited || !osutil.IsWindows() {
 			stopCtx, stopCancel := process.WithDetachedStopTimeout(ctx)
-			stopErr := pe.StopProcess(stopCtx, ptp.Handle)
+			stopErr := pe.StopProcess(stopCtx, ptp.Handle, process.StopWithProcessGroup())
 			stopCancel()
 			if stopErr != nil {
 				if process.IsProcessGoneErr(stopErr) {

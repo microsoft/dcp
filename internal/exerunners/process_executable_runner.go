@@ -214,7 +214,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
-	r.runExecutableLifecycleMonitor(exe, handle, startLog)
+	r.runExecutableLifecycleMonitor(exe, handle, true, startLog)
 
 	r.runningProcesses.Store(pidToRunID(handle.Pid), &processRunState{
 		handle:           handle,
@@ -332,7 +332,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	handle := ptp.Handle
 	runID := pidToRunID(handle.Pid)
-	r.runExecutableLifecycleMonitor(exe, handle, startLog)
+	r.runExecutableLifecycleMonitor(exe, handle, true, startLog)
 
 	r.runningProcesses.Store(runID, &processRunState{
 		handle:           handle,
@@ -437,7 +437,7 @@ func (r *ProcessExecutableRunner) AdoptRun(
 	if findErr := r.pe.CheckProcessRunning(handle); findErr != nil {
 		return fmt.Errorf("cannot adopt process run %s: %w", runID, findErr)
 	}
-	r.runExecutableLifecycleMonitor(exe, handle, log)
+	r.runExecutableLifecycleMonitor(exe, handle, false, log)
 
 	stopWatching := make(chan struct{})
 	var stopWatchingOnce sync.Once
@@ -463,13 +463,14 @@ func (r *ProcessExecutableRunner) AdoptRun(
 func (r *ProcessExecutableRunner) runExecutableLifecycleMonitor(
 	exe *apiv1.Executable,
 	handle process.ProcessHandle,
+	knownGroupLeader bool,
 	log logr.Logger,
 ) {
 	effectiveMode := exe.Spec.EffectiveMode()
 	switch {
 	case effectiveMode.ShouldStopProcessOnDelete():
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, handle, log)
+		dcpproc.RunProcessWatcher(r.pe, handle, knownGroupLeader, log)
 		return
 
 	case effectiveMode == apiv1.ExecutableModePersistent:
@@ -483,7 +484,7 @@ func (r *ProcessExecutableRunner) runExecutableLifecycleMonitor(
 		}
 
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, handle, log)
+		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, handle, knownGroupLeader, log)
 
 	default:
 		return
@@ -608,7 +609,11 @@ func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID cont
 	} else {
 		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
 		defer stopCtxCancel()
-		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
+		var stopOptions []process.ProcessStopOption
+		if !runState.adopted {
+			stopOptions = append(stopOptions, process.StopWithProcessGroup())
+		}
+		stopErr = r.pe.StopProcess(stopCtx, runState.handle, stopOptions...)
 	}
 	if process.IsProcessGoneErr(stopErr) {
 		return nil

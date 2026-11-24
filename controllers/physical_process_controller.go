@@ -266,6 +266,12 @@ func handlePhysicalProcessRunning(
 	data *physicalProcessData,
 	log logr.Logger,
 ) objectChange {
+	if physicalProcess.Spec.Stop && physicalProcess.Spec.Process != nil &&
+		!osutil.IsWindows() && !data.stopCompleted {
+		data.state = physicalProcessStateStop
+		return additionalReconciliationNeeded
+	}
+
 	runningErr := reconciler.processExecutor.CheckProcessRunning(data.handle)
 	if process.IsProcessGoneErr(runningErr) {
 		data.state = physicalProcessStateExited
@@ -355,11 +361,17 @@ func handlePhysicalProcessStopState(
 func handlePhysicalProcessTerminal(
 	_ context.Context,
 	_ *PhysicalProcessReconciler,
-	_ *apiv2.PhysicalProcess,
+	physicalProcess *apiv2.PhysicalProcess,
 	_ physicalProcessState,
-	_ *physicalProcessData,
+	data *physicalProcessData,
 	_ logr.Logger,
 ) objectChange {
+	if (data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing) &&
+		physicalProcess.Spec.Stop && physicalProcess.Spec.Process != nil &&
+		!osutil.IsWindows() && !data.stopCompleted {
+		data.state = physicalProcessStateStop
+		return additionalReconciliationNeeded
+	}
 	return noChange
 }
 
@@ -651,7 +663,7 @@ func (r *PhysicalProcessReconciler) runPhysicalProcessLifecycleMonitor(
 	log logr.Logger,
 ) {
 	if !processConfig.RetainRuntimeProcess {
-		dcpproc.RunProcessWatcher(r.processExecutor, handle, log)
+		dcpproc.RunProcessWatcher(r.processExecutor, handle, true, log)
 		return
 	}
 
@@ -663,7 +675,7 @@ func (r *PhysicalProcessReconciler) runPhysicalProcessLifecycleMonitor(
 	if !found {
 		return
 	}
-	dcpproc.RunProcessWatcherForMonitor(r.processExecutor, monitor, handle, log)
+	dcpproc.RunProcessWatcherForMonitor(r.processExecutor, monitor, handle, true, log)
 }
 
 func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
@@ -826,7 +838,11 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	} else {
 		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
 		defer cleanupCancel()
-		stopErr = r.processExecutor.StopProcess(cleanupCtx, data.handle)
+		var stopOptions []process.ProcessStopOption
+		if physicalProcess.Spec.Process != nil {
+			stopOptions = append(stopOptions, process.StopWithProcessGroup())
+		}
+		stopErr = r.processExecutor.StopProcess(cleanupCtx, data.handle, stopOptions...)
 	}
 	if errors.Is(stopErr, process.ErrIncompleteProcessTree) {
 		rootRunningErr := r.processExecutor.CheckProcessRunning(data.handle)
@@ -874,7 +890,10 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	}
 
 	data.state = physicalProcessStateExited
-	data.finishedAt = time.Now()
+	data.stopCompleted = true
+	if data.finishedAt.IsZero() {
+		data.finishedAt = time.Now()
+	}
 	data.failureReason = ""
 	data.failureMessage = ""
 	data.retryAfter = time.Time{}
@@ -922,8 +941,8 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 	// A resource that never took ownership of a running process has nothing to stop, so deletion
 	// only needs to drop the finalizer.
 	if data == nil || data.handle.Pid <= 0 || retain ||
-		data.state == physicalProcessStateExited ||
-		data.state == physicalProcessStateMissing {
+		((data.state == physicalProcessStateExited ||
+			data.state == physicalProcessStateMissing) && (osutil.IsWindows() || data.stopCompleted)) {
 		if data != nil && data.handle.Pid > 0 && data.stdout != nil &&
 			data.stdout.DirectFile == nil && !data.outputComplete {
 			return additionalReconciliationNeeded, StandardDelay
@@ -971,6 +990,7 @@ func markDescendantCleanupUnconfirmed(data *physicalProcessData, message string)
 }
 
 func finalizePhysicalProcessWithUnconfirmedDescendants(data *physicalProcessData, message string) {
+	data.stopCompleted = true
 	if data.finishedAt.IsZero() {
 		data.state = physicalProcessStateMissing
 		data.finishedAt = time.Now()

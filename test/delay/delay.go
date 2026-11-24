@@ -44,6 +44,7 @@ type delayFlagData struct {
 	holdPipe       bool
 	coupleChildren bool
 	forkChildren   bool
+	childrenOnExit bool
 	reportReady    bool
 	readyFile      string
 }
@@ -60,6 +61,7 @@ const (
 	holdPipeFlag       = "hold-pipe"
 	coupleChildrenFlag = "couple-children"
 	forkChildrenFlag   = "fork-children"
+	childrenOnExitFlag = "children-on-exit"
 	reportReadyFlag    = "report-ready"
 	readyFileFlag      = "ready-file"
 )
@@ -85,6 +87,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().BoolVar(&flags.holdPipe, holdPipeFlag, false, "If specified with --child-spec, children inherit stdout and stderr and keep those pipes open after the parent exits.")
 	cmd.Flags().BoolVar(&flags.coupleChildren, coupleChildrenFlag, false, "If specified, child processes stay in the parent's process group instead of being decoupled.")
 	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
+	cmd.Flags().BoolVar(&flags.childrenOnExit, childrenOnExitFlag, false, "If specified with --child-spec, children are created during shutdown instead of startup. Writes readiness and child PIDs to stdout.")
 	cmd.Flags().BoolVar(&flags.reportReady, reportReadyFlag, false, "If specified, write the process PID to stdout after signal handling and child startup are ready.")
 	cmd.Flags().StringVar(&flags.readyFile, readyFileFlag, "", "Create this file after all direct children have started. The file must not already exist. This option is not passed to children.")
 
@@ -100,6 +103,9 @@ func runMain(log logr.Logger) error {
 	}
 	if flags.holdPipe && flags.childSpec == "" {
 		return fmt.Errorf("the %s flag requires %s", holdPipeFlag, childSpecFlag)
+	}
+	if flags.childrenOnExit && flags.childSpec == "" {
+		return fmt.Errorf("the %s flag requires %s", childrenOnExitFlag, childSpecFlag)
 	}
 
 	shutdownCh := make(chan os.Signal, 1)
@@ -128,9 +134,11 @@ func runMain(log logr.Logger) error {
 		}
 	}(ctx)
 
-	err := runChildrenAsNeeded()
-	if err != nil {
-		return err
+	if !flags.childrenOnExit {
+		childrenStartErr := runChildrenAsNeeded()
+		if childrenStartErr != nil {
+			return childrenStartErr
+		}
 	}
 	if flags.reportReady {
 		fmt.Fprintf(os.Stdout, "Ready: %d\n", os.Getpid())
@@ -152,7 +160,16 @@ func runMain(log logr.Logger) error {
 		defer cancelFn()
 	}
 
+	if flags.childrenOnExit {
+		fmt.Fprintln(os.Stdout, "Ready to create children on exit")
+	}
 	<-ctx.Done()
+	if flags.childrenOnExit {
+		shutdownChildrenErr := runChildrenAsNeeded()
+		if shutdownChildrenErr != nil {
+			return shutdownChildrenErr
+		}
+	}
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -231,6 +248,9 @@ func runChildrenAsNeeded() error {
 		err = cmd.Start()
 		if err != nil {
 			return fmt.Errorf("could not start a child process: %w", err)
+		}
+		if flags.childrenOnExit {
+			fmt.Fprintln(os.Stdout, cmd.Process.Pid)
 		}
 
 		// If the child exits first, make sure we wait for it so it doesn't become a zombie.

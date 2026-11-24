@@ -508,10 +508,6 @@ func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
 }
 
-func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, options processStopOptions) error {
-	return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
-}
-
 // stopProcessTreeInternal stops a verified process tree root-first.
 //
 // The root process gets the first graceful-stop opportunity and may escalate to a force kill.

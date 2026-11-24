@@ -8,7 +8,9 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
@@ -426,6 +429,95 @@ func TestV2PhysicalProcessControllerStopsProcessOnRequest(t *testing.T) {
 			nil,
 		)
 		require.Len(t, stopExecutions, 1)
+	}
+}
+
+// Verifies that PhysicalProcess stop and deletion clean surviving Unix group members after leader exit,
+// retain the leader's exit result, and finish deletion without rescheduling completed cleanup.
+func TestV2PhysicalProcessControllerCleansGroupAfterLeaderExit(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("Unix process groups are not available on Windows")
+	}
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	serverInfo, environment, startupErr := StartAdvancedTestEnvironmentWithFlags(
+		ctx, PhysicalProcessController, t.Name(), NoSeparateWorkingDir, ctrl_testutil.ApiServerFlagsNone,
+	)
+	require.NoError(t, startupErr)
+	defer shutdownAdvancedTestEnvironment(t, ctx, cancel, serverInfo)
+	apiClient := serverInfo.Client
+
+	delayDir, delayDirErr := internal_testutil.GetTestToolDir("delay")
+	require.NoError(t, delayDirErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pproc-group-after-exit"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, apiClient, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	for _, stopRequested := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stop-requested=%t", stopRequested), func(t *testing.T) {
+			physicalProcess := &apiv2.PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("group-%t", stopRequested), Namespace: namespace.Name},
+				Spec: apiv2.PhysicalProcessSpec{
+					Process: &apiv2.PhysicalProcessConfig{
+						ExecutablePath: filepath.Join(delayDir, "delay"),
+						Args:           []string{"--delay=120s", "--child-spec=1", "--couple-children"},
+					},
+				},
+			}
+			require.NoError(t, apiClient.Create(ctx, physicalProcess))
+			running := waitObjectAssumesStateEx(t, ctx, apiClient, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
+			})
+			require.NotNil(t, running.Status.PID)
+			pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+			require.NoError(t, pidErr)
+			handle := process.NewHandle(pid, running.Status.IdentityTimestamp.Time)
+			deadline, haveDeadline := ctx.Deadline()
+			require.True(t, haveDeadline)
+			internal_testutil.EnsureProcessTree(t, handle, 2, time.Until(deadline))
+			tree, treeErr := process.GetProcessTree(ctx, handle)
+			require.NoError(t, treeErr)
+			require.Len(t, tree, 2)
+			member := tree[1]
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+				defer cleanupCancel()
+				cleanupErr := environment.ProcessExecutor.StopProcess(cleanupCtx, member, process.StopRootOnly())
+				require.True(t, cleanupErr == nil || process.IsProcessGoneErr(cleanupErr), "could not clean up delay member: %v", cleanupErr)
+			})
+
+			require.NoError(t, environment.ProcessExecutor.StopProcess(ctx, handle, process.StopRootOnly()))
+			exited := waitObjectAssumesStateEx(t, ctx, apiClient, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
+			})
+			require.NoError(t, environment.ProcessExecutor.CheckProcessRunning(member))
+			if stopRequested {
+				require.NoError(t, retryOnConflictEx[apiv2.PhysicalProcess](ctx, apiClient, physicalProcess.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalProcess) error {
+					current.Spec.Stop = true
+					return apiClient.Update(updateCtx, current)
+				}))
+				stopErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+					runningErr := environment.ProcessExecutor.CheckProcessRunning(member)
+					if process.IsProcessGoneErr(runningErr) {
+						return true, nil
+					}
+					return false, runningErr
+				})
+				require.NoError(t, stopErr)
+				stopped := waitObjectAssumesStateEx(t, ctx, apiClient, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
+				})
+				require.Equal(t, exited.Status.ExitCode, stopped.Status.ExitCode)
+				require.Equal(t, exited.Status.FinishedAt, stopped.Status.FinishedAt)
+			}
+			require.NoError(t, apiClient.Delete(ctx, physicalProcess))
+			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, apiClient, physicalProcess)
+			require.True(t, process.IsProcessGoneErr(environment.ProcessExecutor.CheckProcessRunning(member)))
+		})
 	}
 }
 
