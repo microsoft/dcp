@@ -568,7 +568,7 @@ func (apiClient *processReplacementCreateFailureClient) Create(ctx context.Conte
 func TestV2LogicalProcessControllerStopSupersedesPreparedReplacement(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	// Cancel after the record cleanup below; cancellation closes the environment's state store.
+	// The persistent-process cleanup below must run before cancellation closes the environment's state store.
 	t.Cleanup(cancel)
 	var boundary *processReplacementCreateFailureClient
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
