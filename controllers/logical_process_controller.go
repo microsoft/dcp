@@ -180,6 +180,9 @@ func (r *LogicalProcessReconciler) manageLogicalProcess(
 	}
 	stateHandler := getStateInitializer(logicalProcessDataHandlers, data.state, log)
 	change := stateHandler(ctx, r, resource, data.state, data, log)
+	if data.terminal() {
+		releaseLogicalPortReservations(ctx, data.ports, log)
+	}
 	_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
 	projectionChange, delay, valid := data.applyTo(resource)
 	if !valid {
@@ -205,7 +208,9 @@ func handleLogicalProcessPreparation(
 	if data.state != logicalProcessStatePrepare {
 		return additionalReconciliationNeeded
 	}
-	if preparationErr := reconciler.prepareLogicalProcessValues(ctx, resource, data, log); preparationErr != nil {
+	// Persistent processes might be adopted, so fixed ports are claimed once the physical handoff knows DCP will launch.
+	claimFixedPorts := resource.Spec.EffectiveMode() == apiv2.LogicalProcessModeSession
+	if preparationErr := reconciler.prepareLogicalProcessValues(ctx, resource, data, claimFixedPorts, log); preparationErr != nil {
 
 		if errors.Is(preparationErr, errLogicalValuePreparationFailed) {
 			data.state = logicalProcessStatePrepareFailed
@@ -280,7 +285,8 @@ func handleLogicalProcessPhysical(
 			return noChange
 		}
 	}
-	if preparationErr := reconciler.prepareLogicalProcessValues(ctx, resource, data, log); preparationErr != nil {
+	claimFixedPorts := resource.Spec.EffectiveMode() != apiv2.LogicalProcessModeExisting && data.pendingRecord == nil
+	if preparationErr := reconciler.prepareLogicalProcessValues(ctx, resource, data, claimFixedPorts, log); preparationErr != nil {
 
 		if errors.Is(preparationErr, errLogicalValuePreparationFailed) {
 			data.state = logicalProcessStatePrepareFailed
@@ -346,8 +352,22 @@ func handleLogicalProcessPhysical(
 			return additionalReconciliationNeeded
 		}
 		data.pendingRecord = nil
+		for portIndex, port := range data.portData(resource) {
+			if resource.Spec.Ports[portIndex].Port == 0 {
+				continue
+			}
+			if reserveErr := reserveLogicalFixedPort(ctx, port, log); reserveErr != nil {
+				log.Error(reserveErr, "Failed to reserve replacement process port")
+				data.message = reserveErr.Error()
+				return additionalReconciliationNeeded
+			}
+		}
 	}
 	physicalSpec := logicalProcessPhysicalSpec(resource, data)
+	if physicalSpec.Process == nil {
+		// Existing and adopted processes own their bindings, so release ports allocated while evaluating values.
+		releaseLogicalPortReservations(ctx, data.ports, log)
+	}
 	physical, physicalErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data, "", physicalSpec)
 	if physicalErr != nil {
 
@@ -708,6 +728,9 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 
 	defer func() {
 		if data != nil {
+			if data.terminal() {
+				releaseLogicalPortReservations(ctx, data.ports, log)
+			}
 			_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
 			projectionChange, projectionDelay, valid := data.applyTo(resource)
 			change |= projectionChange
@@ -864,16 +887,18 @@ func handleLogicalProcessUnknown(
 }
 
 func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
-	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
+	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, claimFixedPorts bool, log logr.Logger,
 ) error {
 	if resource.Spec.Stop {
 		return nil
 	}
+	releaseLogicalPortReservations(ctx, data.ports, log)
+	data.ports = nil
 	requests := make([]logicalPortRequest, len(resource.Spec.Ports))
 	for portIndex, port := range resource.Spec.Ports {
 		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.Port}
 	}
-	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, resource, requests, log)
+	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, resource, requests, claimFixedPorts, log)
 	if prepareErr != nil {
 		log.Error(prepareErr, "Failed to prepare logical process ports")
 		data.reason, data.message = apiv2.LogicalProcessReasonStarting, prepareErr.Error()
@@ -888,6 +913,9 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 		arguments, environment, evaluationErr := templating.EvaluateV2Values(
 			ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env, osutil.IsWindows())
 		if evaluationErr != nil {
+			for _, port := range ports {
+				port.reservations.Release(ctx, log)
+			}
 			log.Error(evaluationErr, "Failed to evaluate logical process values")
 			data.reason, data.message = apiv2.LogicalProcessReasonFailedToStart, evaluationErr.Error()
 			if !templating.IsTransientTemplateError(evaluationErr) {
@@ -1068,6 +1096,7 @@ func (r *LogicalProcessReconciler) discardLogicalProcessData(ctx context.Context
 		}
 	}
 	missing := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{UID: uid}}
+	releaseLogicalPortReservations(ctx, data.ports, r.Log)
 	defer logger.ReleaseResourceLog(missing.GetResourceId())
 	r.processData.DeleteByNamespacedName(name)
 	return nil

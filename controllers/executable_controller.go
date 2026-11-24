@@ -386,7 +386,7 @@ func handleNewExecutable(
 					return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 				}
 			} else {
-				computed, environmentChange := r.computeExecutableEnvironment(ctx, exe, log, runInfo)
+				computed, environmentChange := r.computeExecutableEnvironment(ctx, exe, log, runInfo, false)
 				if !computed {
 					return environmentChange
 				}
@@ -427,6 +427,10 @@ func handleNewExecutable(
 					}
 				} else {
 					adopted, adoptionChange := r.adoptPersistentExecutableRecord(ctx, exe, runInfo, record, persistentRunner, log)
+					if adopted {
+						// Ports allocated while evaluating the lifecycle key are not used by the adopted process.
+						releaseWorkloadPortReservations(ctx, exe.UID, log)
+					}
 					if adopted || adoptionChange != noChange {
 						return environmentChange | adoptionChange
 					}
@@ -436,6 +440,7 @@ func handleNewExecutable(
 	}
 
 	if !createIfMissing {
+		releaseWorkloadPortReservations(ctx, exe.UID, log)
 		return r.setExecutableState(exe, apiv1.ExecutableStateNotFound) | additionalReconciliationNeeded
 	}
 
@@ -478,7 +483,7 @@ func ensureExecutableRunningState(
 
 	// Ensure the status matches the current state.
 	change |= runInfo.ApplyTo(exe, log)
-	r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+	change |= r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	return change
 }
 
@@ -545,6 +550,10 @@ func ensureExecutableFinalState(
 
 	change |= runInfo.ApplyTo(exe, log) // Ensure the status matches the current state.
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+	if desiredState == apiv1.ExecutableStateFinished || desiredState == apiv1.ExecutableStateTerminated ||
+		desiredState == apiv1.ExecutableStateFailedToStart {
+		releaseWorkloadPortReservations(ctx, exe.UID, log)
+	}
 	return change
 }
 
@@ -587,7 +596,7 @@ func (r *ExecutableReconciler) startExecutable(
 	}
 
 	if len(ri.startResults) == 0 {
-		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri, true)
 		environmentChanged |= startupDataChanged
 		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
@@ -619,6 +628,7 @@ func (r *ExecutableReconciler) startExecutable(
 			if persistErr != nil {
 				log.Error(persistErr, "Could not persist Executable process record")
 				r.cleanUpPersistentStartAfterRecordFailure(ctx, exe, ri.startupStage, res, log)
+				releaseWorkloadPortReservations(ctx, exe.UID, log)
 
 				now := metav1.NowMicro()
 				ri.ExeState = apiv1.ExecutableStateFailedToStart
@@ -680,11 +690,12 @@ func (r *ExecutableReconciler) startExecutable(
 				exe.Status.StartupTimestamp = metav1.NowMicro()
 			}
 			exe.Status.FinishTimestamp = exe.Status.StartupTimestamp
+			releaseWorkloadPortReservations(ctx, exe.UID, log)
 			r.runs.DeleteByNamespacedName(exe.NamespacedName())
 			return statusChanged | environmentChanged
 		}
 
-		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri, true)
 		environmentChanged |= startupDataChanged
 		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
@@ -747,6 +758,8 @@ func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
 			log.Error(runnerNotFoundErr, "The persistent Executable cannot be stopped after process record update failed")
 		} else if stopErr := runner.StopRun(cleanupCtx, res.RunID, log); stopErr != nil {
 			log.Error(stopErr, "Could not stop persistent Executable after process record update failed", "RunID", res.RunID)
+		} else {
+			releaseWorkloadPortReservations(cleanupCtx, exe.UID, log)
 		}
 	}
 
@@ -974,6 +987,9 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 		}
 
 		stopErr := runner.StopRun(cleanupCtx, runInfo.RunID, log)
+		if stopErr == nil {
+			releaseWorkloadPortReservations(cleanupCtx, exe.UID, log)
+		}
 
 		// If the stop fails, we are not sure if the Executable is still running or not,
 		// so we queue the transition to the unknown state. But if the stop succeeds,
@@ -1040,6 +1056,10 @@ func (r *ExecutableReconciler) releaseExecutableResources(
 	log logr.Logger,
 ) {
 	r.releaseExecutableControllerResources(ctx, exe, log)
+	if runInfo != nil && (runInfo.ExeState == apiv1.ExecutableStateFinished || runInfo.ExeState == apiv1.ExecutableStateTerminated ||
+		runInfo.ExeState == apiv1.ExecutableStateFailedToStart) {
+		releaseWorkloadPortReservations(ctx, exe.UID, log)
+	}
 	if !r.runnerOwnsOutputDeletion(ctx, exe, runInfo, log) {
 		r.deleteOutputFiles(exe, log)
 	}
@@ -1097,8 +1117,11 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 	exe *apiv1.Executable,
 	runInfo *ExecutableRunInfo,
 	log logr.Logger,
-) {
-	ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
+) objectChange {
+	// Only runs launched by this DCP instance have start results; adopted processes own their existing bindings.
+	change := ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, executableEndpointContext{
+		claimProducerPorts: len(runInfo.startResults) > 0,
+	}, log)
 
 	if len(exe.Spec.HealthProbes) > 0 && pointers.NotTrue(runInfo.healthProbesEnabled) {
 		log.V(1).Info("Enabling health probes for Executable...")
@@ -1113,6 +1136,13 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 			log.Error(probeErr, "Could not enable health probes for Executable")
 		}
 	}
+	return change
+}
+
+// executableEndpointContext carries Executable run state used to create Endpoints.
+type executableEndpointContext struct {
+	// Whether this DCP instance launched the run and is responsible for claiming its producer ports.
+	claimProducerPorts bool
 }
 
 func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
@@ -1181,17 +1211,26 @@ func (r *ExecutableReconciler) createEndpoints(
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	existingEndpoints []*apiv1.Endpoint,
-	_ struct{}, // Endpoint creation context data, not used for Executables
+	ecc executableEndpointContext,
 	log logr.Logger,
-) ([]*apiv1.Endpoint, error) {
+) ([]*apiv1.Endpoint, objectChange, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "Could not generate unique name for Endpoint object")
-		return nil, err
+		return nil, noChange, err
 	}
 
 	if !networking.IsValidPort(int(serviceProducer.Port)) {
-		return nil, fmt.Errorf("information about the port to expose the service is missing; service-producer annotation is invalid")
+		return nil, noChange, fmt.Errorf("information about the port to expose the service is missing; service-producer annotation is invalid")
+	}
+
+	change := noChange
+	if ecc.claimProducerPorts {
+		var reservationErr error
+		change, reservationErr = reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, serviceProducer.Address, serviceProducer.Port, log)
+		if reservationErr != nil {
+			return nil, change, reservationErr
+		}
 	}
 
 	address := serviceProducer.Address
@@ -1214,7 +1253,7 @@ func (r *ExecutableReconciler) createEndpoints(
 			ep.Spec.Port == serviceProducer.Port
 	})
 	if endpointExists {
-		return nil, nil
+		return nil, change, nil
 	}
 
 	// Otherwise, create a new Endpoint object.
@@ -1231,7 +1270,7 @@ func (r *ExecutableReconciler) createEndpoints(
 		},
 	}
 
-	return []*apiv1.Endpoint{endpoint}, nil
+	return []*apiv1.Endpoint{endpoint}, change, nil
 }
 
 func (r *ExecutableReconciler) validateExistingEndpoints(
@@ -1239,7 +1278,7 @@ func (r *ExecutableReconciler) validateExistingEndpoints(
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	existing []*apiv1.Endpoint,
-	_ struct{},
+	_ executableEndpointContext,
 	log logr.Logger,
 ) ([]*apiv1.Endpoint, []*apiv1.Endpoint, error) {
 	// Currently we do not support any scenario when Executable replicas change the ports they listen on
@@ -1258,6 +1297,7 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 	ctx context.Context,
 	exe *apiv1.Executable,
 	reservedServicePorts map[types.NamespacedName]int32,
+	reservations *networking.PortReservationSet,
 	log logr.Logger,
 ) error {
 	// Start with ambient environment.
@@ -1297,7 +1337,7 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 
 	// Apply variable substitutions.
 
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, exe, reservedServicePorts, reservations, log)
 	if err != nil {
 		return err
 	}
@@ -1327,9 +1367,10 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	ctx context.Context,
 	exe *apiv1.Executable,
 	reservedServicePorts map[types.NamespacedName]int32,
+	reservations *networking.PortReservationSet,
 	log logr.Logger,
 ) error {
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, exe, reservedServicePorts, reservations, log)
 	if err != nil {
 		return err
 	}
@@ -1349,23 +1390,49 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 }
 
 // Computes effective environment and invocation arguments for the Executable.
+// Fixed producer ports are claimed only when the caller will launch a process; adoption candidates own existing bindings.
 // Returned value indicates whether the method was successful or not, together with objectChange that indicates
 // whether the Executable status was changed and whether another reconciliation iteration is needed.
 // This method is called from the reconciliation loop.
-func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) (bool, objectChange) {
+func (r *ExecutableReconciler) computeExecutableEnvironment(
+	ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo, claimFixedProducerPorts bool,
+) (bool, objectChange) {
 	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
 	reservedServicePorts := ri.ReservedPorts
 	if reservedServicePorts == nil {
 		reservedServicePorts = make(map[types.NamespacedName]int32)
 	}
+	ri.ReservedPorts = reservedServicePorts
+	reservations, _ := workloadPortReservations.LoadOrStore(exe.UID, &networking.PortReservationSet{})
+	defer func() {
+		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
+	}()
 
 	markExecutableFailed := func() {
 		ri.ExeState = apiv1.ExecutableStateFailedToStart
-		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		releaseWorkloadPortReservations(ctx, exe.UID, log)
 	}
 
-	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
+	producers, producersErr := commonapi.GetServiceProducersForObject(exe, log)
+	if producersErr != nil {
+		markExecutableFailed()
+		return false, statusChanged
+	}
+	for _, producer := range producers {
+		if !claimFixedProducerPorts || producer.Port == 0 {
+			continue
+		}
+		// A missing Service must not prevent startup; its protocol is reserved once available.
+		_, reserveErr := reserveServiceProducerEndpointPort(ctx, r.NoCacheClient, exe, producer, producer.Address, producer.Port, log)
+		if reserveErr != nil {
+			log.Error(reserveErr, "Could not reserve fixed Executable producer port before startup")
+			markExecutableFailed()
+			return false, statusChanged
+		}
+	}
+
+	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, reservations, log)
 	if templating.IsTransientTemplateError(err) {
 		if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
 			log.Info("Executable is being deleted while waiting to compute effective environment, aborting startup",
@@ -1383,7 +1450,7 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 		return false, statusChanged
 	}
 
-	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
+	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, reservations, log)
 	if templating.IsTransientTemplateError(err) {
 		if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
 			log.Info("Executable is being deleted while waiting to compute effective invocation arguments, aborting startup",
@@ -1407,8 +1474,6 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 			"Ports", maps.Values(reservedServicePorts),
 		)
 	}
-	ri.ReservedPorts = reservedServicePorts
-	r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	return true, statusChanged // Status.EffectiveEnv and Status.EffectiveArgs were changed
 }
 
