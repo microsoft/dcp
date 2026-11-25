@@ -85,6 +85,8 @@ unless --stop-only is specified.`,
 	// Add test container orchestrator socket flag (for testing)
 	container_flags.EnsureTestContainerOrchestratorSocketFlag(containerCmd.Flags())
 
+	cmds.HandleSigpipeSignals(containerCmd)
+
 	return containerCmd, nil
 }
 

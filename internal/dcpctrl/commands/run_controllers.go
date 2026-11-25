@@ -63,6 +63,7 @@ If --workload-id is set, newly-created persistent Containers, Executables, Conta
 	cmds.AddWorkloadIDFlag(runControllersCmd)
 
 	cmds.AddMonitorFlags(runControllersCmd)
+	cmds.HandleSigpipeSignals(runControllersCmd)
 	notifications.AddNotificationSocketFlag(runControllersCmd.Flags())
 
 	return runControllersCmd

@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,7 +43,6 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -188,7 +186,8 @@ func StartApiServerWithOptions(
 
 	info.Dispose = cleanup
 
-	dcpPath, dcpPathErr := getDcpExecutablePath()
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	if dcpPathErr != nil {
 		cleanup()
 		return nil, fmt.Errorf("failed to find the DCP executable: %w", dcpPathErr)
@@ -314,34 +313,6 @@ func StartApiServerWithOptions(
 	info.RestClient = restClient
 
 	return &info, nil
-}
-
-func getDcpExecutablePath() (string, error) {
-	dcpExeName := "dcp"
-	if runtime.GOOS == "windows" {
-		dcpExeName += ".exe"
-	}
-
-	outputBin, found := os.LookupEnv("OUTPUT_BIN")
-	if found {
-		dcpPath := filepath.Join(outputBin, dcpExeName)
-		file, err := os.Stat(dcpPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to find the DCP executable: %w", err)
-		}
-		if file.IsDir() {
-			return "", fmt.Errorf("the expected path to DCP executable is a directory: %s", dcpPath)
-		}
-		return dcpPath, nil
-	}
-
-	tail := []string{dcppaths.BuildOutputDir, dcpExeName}
-	rootFolder, err := osutil.FindRootFor(osutil.FileTarget, tail...)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
 }
 
 func addToEnvIfPresent(env []string, vars ...string) []string {

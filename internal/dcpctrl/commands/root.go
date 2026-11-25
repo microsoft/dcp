@@ -28,7 +28,7 @@ func NewRootCommand(log *logger.Logger) (*cobra.Command, error) {
 
 	dcpctrl is the host process that runs the controllers for the DCP API objects.`,
 		SilenceUsage:     true,
-		PersistentPreRun: cmds.LogVersion(log.Logger, "Starting DCPCTRL..."),
+		PersistentPreRun: cmds.PrepareCommandExecution(log.Logger, "Starting DCPCTRL..."),
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true

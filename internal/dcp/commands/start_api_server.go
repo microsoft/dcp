@@ -58,6 +58,7 @@ func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 	container_flags.EnsureRuntimeFlag(startApiSrvCmd.Flags())
 	container_flags.EnsureTestContainerOrchestratorSocketFlag(startApiSrvCmd.Flags())
 	cmds.AddMonitorFlags(startApiSrvCmd)
+	cmds.HandleSigpipeSignals(startApiSrvCmd)
 
 	return startApiSrvCmd, nil
 }
@@ -65,6 +66,10 @@ func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		log = log.WithName("start-apiserver")
+
+		// Registered first, so that the session folder is removed on every exit path except a successful detach,
+		// which hands the folder over to the forked process via PreserveSessionFolder().
+		defer usvc_io.CleanupSessionFolderIfNeeded()
 
 		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log.WithName("monitor"))
 		defer apiServerCtxCancel()
@@ -97,8 +102,6 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			log.Error(err, "Failed to capture startup profile")
 		}
-
-		defer usvc_io.CleanupSessionFolderIfNeeded()
 
 		if rootDir == "" {
 			rootDir, err = os.Getwd()

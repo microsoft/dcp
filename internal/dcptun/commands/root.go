@@ -24,7 +24,7 @@ func NewRootCommand(logger *logger.Logger) (*cobra.Command, error) {
 
 	A reverse tunnel allows clients to connect to servers running on a different network that is not diredctly accessible for clients`,
 		SilenceUsage:     true,
-		PersistentPreRun: cmds.LogVersion(logger.Logger, "Starting DCPTUN..."),
+		PersistentPreRun: cmds.PrepareCommandExecution(logger.Logger, "Starting DCPTUN..."),
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
