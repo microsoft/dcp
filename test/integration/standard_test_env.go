@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	clientgorest "k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_cache "sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -67,6 +68,8 @@ type TestEnvironmentOptions struct {
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
 	CreateLogicalServiceProxy       proxy.ProxyFactory
+	// ConfigureCacheInformers registers handlers before the manager starts.
+	ConfigureCacheInformers func(context.Context, ctrl_cache.Informers) error
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -236,6 +239,13 @@ func StartTestEnvironmentWithOptions(
 		return nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
 
+	if options.ConfigureCacheInformers != nil {
+		configureErr := options.ConfigureCacheInformers(ctx, mgr.GetCache())
+		if configureErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure cache informers: %w", configureErr)
+		}
+	}
+
 	hpSet := health.NewHealthProbeSet(
 		ctx,
 		log.WithName("HealthProbeSet"),
@@ -342,7 +352,7 @@ func StartTestEnvironmentWithOptions(
 
 	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	controllerAPIReader := mgr.GetAPIReader()
-	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController|PhysicalContainerImageController) != 0 && options.DecorateAPIReader != nil {
 		controllerAPIReader = options.DecorateAPIReader(controllerAPIReader)
 		if controllerAPIReader == nil {
 			return nil, nil, fmt.Errorf("api reader decorator returned nil")
@@ -403,7 +413,7 @@ func StartTestEnvironmentWithOptions(
 		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
 			ctx,
 			mgr.GetClient(),
-			mgr.GetAPIReader(),
+			controllerAPIReader,
 			log.WithName("PhysicalContainerImageReconciler"),
 			serverInfo.ContainerOrchestrator,
 			outputCleanupQueue,
