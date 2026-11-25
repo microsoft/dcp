@@ -1380,6 +1380,7 @@ func TestV2PhysicalContainerControllerRetriesCreateWithoutPartialContainer(t *te
 	require.Equal(t, 0, containerOrchestrator.RemoveContainerCallCount(containerName))
 }
 
+// Verifies that PhysicalContainerReconciler rechecks dependencies after a create failure and waits for an unavailable image before retrying creation.
 func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1388,7 +1389,10 @@ func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-reprepare-create-retry")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "reprepare-image", "reprepare-image")
 	containerName := "v2-pctr-reprepare-create-retry-container"
-	containerOrchestrator.FailNextCreateContainer(containerName, errors.New("create failed once"))
+	containerOrchestrator.FailNextCreateContainerAfterCreation(containerName, errors.New("create failed once"))
+	// Hold retry cleanup so image invalidation cannot race the next dependency check.
+	releaseRemoval := containerOrchestrator.BlockRemoveContainerAfterFailures(containerName)
+	defer releaseRemoval()
 
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1411,6 +1415,10 @@ func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t 
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 
 	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, image)
+	waitObjectAssumesStateEx(t, ctx, controllerClient, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhaseUnknown, nil
+	})
+	releaseRemoval()
 
 	imagePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
 		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
@@ -1419,6 +1427,7 @@ func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t 
 	})
 	requireReadyCondition(t, imagePendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 1, containerOrchestrator.RemoveContainerCallCount(containerName))
 
 	restoreImageInspection()
 	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)

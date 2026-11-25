@@ -56,6 +56,7 @@ var (
 	containerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
 	ideRunner                        *ctrl_testutil.TestIdeRunner
 	client                           ctrl_client.Client
+	controllerClient                 ctrl_client.Client
 	restClient                       *clientgorest.RESTClient
 	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
 	testStateStore                   *statestore.Store
@@ -128,6 +129,7 @@ func TestMain(m *testing.M) {
 	}
 	log := teInfo.Log
 	client = serverInfo.Client
+	controllerClient = teInfo.ControllerClient
 	restClient = serverInfo.RestClient
 	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
