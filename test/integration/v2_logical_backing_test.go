@@ -74,7 +74,7 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 				containerOrchestrator.FailNextCreateContainer(runtimeName, containers.ErrRuntimeNotHealthy)
 				reason = apiv2.PhysicalContainerReasonCreateFailed
 			case "partial-create":
-				containerOrchestrator.FailNextCreateContainerAfterCreation(runtimeName, containers.ErrRuntimeNotHealthy)
+				containerOrchestrator.ScheduleContainerCreationWithPostCreateFailure(runtimeName, containers.ErrRuntimeNotHealthy)
 				reason = apiv2.PhysicalContainerReasonCreateFailed
 			case "replacement", "tracked":
 				key := "previous"

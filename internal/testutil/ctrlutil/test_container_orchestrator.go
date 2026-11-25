@@ -1284,7 +1284,7 @@ func (to *TestContainerOrchestrator) FailNextCreateContainer(name string, create
 	to.queueOperationError(operationCreateContainer, name, createErr)
 }
 
-func (to *TestContainerOrchestrator) FailNextCreateContainerAfterCreation(name string, createErr error) {
+func (to *TestContainerOrchestrator) ScheduleContainerCreationWithPostCreateFailure(name string, createErr error) {
 	if createErr == nil {
 		createErr = errors.New("simulated post-create container failure")
 	}
@@ -1304,7 +1304,12 @@ func (to *TestContainerOrchestrator) FailNextRemoveContainer(name string, remove
 	to.queueOperationError(operationRemoveContainer, name, removeErr)
 }
 
-// BlockRemoveContainerAfterFailures queues removal failures and blocks subsequent attempts until released.
+// BlockRemoveContainer blocks removal of the named container until the returned function is called.
+func (to *TestContainerOrchestrator) BlockRemoveContainer(name string) func() {
+	return to.BlockRemoveContainerAfterFailures(name)
+}
+
+// BlockRemoveContainerAfterFailures queues the specified removal failures, then blocks subsequent attempts until released.
 func (to *TestContainerOrchestrator) BlockRemoveContainerAfterFailures(name string, failures ...error) func() {
 	queuedFailures := make([]error, len(failures))
 	for index, failure := range failures {

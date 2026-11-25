@@ -1389,9 +1389,12 @@ func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-reprepare-create-retry")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "reprepare-image", "reprepare-image")
 	containerName := "v2-pctr-reprepare-create-retry-container"
-	containerOrchestrator.FailNextCreateContainerAfterCreation(containerName, errors.New("create failed once"))
-	// Hold retry cleanup so image invalidation cannot race the next dependency check.
-	releaseRemoval := containerOrchestrator.BlockRemoveContainerAfterFailures(containerName)
+	containerOrchestrator.ScheduleContainerCreationWithPostCreateFailure(containerName, errors.New("create failed once"))
+	// The post-create failure leaves a container behind. When the PhysicalContainer controller retries
+	// creation, it removes that partial container before resolving its PhysicalContainerImage dependency
+	// again. Block removal until the test marks the image unavailable, so the retry cannot reach image
+	// resolution before the test changes the image state.
+	releaseRemoval := containerOrchestrator.BlockRemoveContainer(containerName)
 	defer releaseRemoval()
 
 	container := &apiv2.PhysicalContainer{
@@ -1442,7 +1445,7 @@ func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create-retry")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retry-image", "retry-image")
 	containerName := "v2-pctr-create-retry-container"
-	containerOrchestrator.FailNextCreateContainerAfterCreation(containerName, errors.New("create failed once"))
+	containerOrchestrator.ScheduleContainerCreationWithPostCreateFailure(containerName, errors.New("create failed once"))
 	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("cleanup failed once"))
 
 	container := &apiv2.PhysicalContainer{
@@ -1486,7 +1489,7 @@ func TestV2PhysicalContainerControllerCleansUpPartialContainerAfterTerminalCreat
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-partial-create-failure")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "partial-create-failure-image", "partial-create-failure-image")
 	containerName := "v2-pctr-partial-create-failure-container"
-	containerOrchestrator.FailNextCreateContainerAfterCreation(
+	containerOrchestrator.ScheduleContainerCreationWithPostCreateFailure(
 		containerName,
 		errors.Join(containers.ErrCouldNotAllocate, errors.New("failed after creating runtime container")),
 	)
@@ -1520,7 +1523,7 @@ func TestV2PhysicalContainerControllerRetriesPartialContainerCleanupAfterFailure
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-partial-cleanup-retry")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "partial-cleanup-retry-image", "partial-cleanup-retry-image")
 	containerName := "v2-pctr-partial-cleanup-retry-container"
-	containerOrchestrator.FailNextCreateContainerAfterCreation(
+	containerOrchestrator.ScheduleContainerCreationWithPostCreateFailure(
 		containerName,
 		errors.Join(containers.ErrCouldNotAllocate, errors.New("failed after creating runtime container")),
 	)
