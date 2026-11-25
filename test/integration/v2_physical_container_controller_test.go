@@ -11,6 +11,7 @@ import (
 	std_slices "slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -696,7 +698,7 @@ func TestV2PhysicalContainerControllerRechecksEarlierDependencies(t *testing.T) 
 	})
 	requireReadyCondition(t, volumePendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
 
-	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, image)
+	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, client, containerOrchestrator, image)
 
 	imagePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
 		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
@@ -1380,21 +1382,199 @@ func TestV2PhysicalContainerControllerRetriesCreateWithoutPartialContainer(t *te
 	require.Equal(t, 0, containerOrchestrator.RemoveContainerCallCount(containerName))
 }
 
-// Verifies that PhysicalContainerReconciler rechecks dependencies after a create failure and waits for an unavailable image before retrying creation.
-func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t *testing.T) {
+type imageReadTarget struct {
+	key ctrl_client.ObjectKey
+	uid types.UID
+}
+
+type imageUnavailableObservationClient struct {
+	ctrl_client.Client
+	target      atomic.Pointer[imageReadTarget]
+	signaled    atomic.Bool
+	unavailable chan struct{}
+}
+
+func (apiClient *imageUnavailableObservationClient) Get(
+	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
+) error {
+	// A read already in flight must not satisfy a later observation.
+	target := apiClient.target.Load()
+	getErr := apiClient.Client.Get(ctx, key, object, options...)
+	if getErr != nil || target == nil || key != target.key {
+		return getErr
+	}
+
+	image, isImage := object.(*apiv2.PhysicalContainerImage)
+	if !isImage || image.UID != target.uid || image.Status.Phase != apiv2.PhysicalContainerImagePhaseUnknown {
+		return getErr
+	}
+	ready := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady))
+	if ready != nil && ready.Status == metav1.ConditionFalse &&
+		ready.Reason == string(apiv2.PhysicalContainerImageReasonLocalImageNotFound) &&
+		apiClient.signaled.CompareAndSwap(false, true) {
+		close(apiClient.unavailable)
+	}
+	return getErr
+}
+
+type imageReadBarrierClient struct {
+	ctrl_client.Client
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (apiClient *imageReadBarrierClient) Get(
+	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
+) error {
+	close(apiClient.entered)
+	select {
+	case <-apiClient.release:
+		return apiClient.Client.Get(ctx, key, object, options...)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Verifies that imageUnavailableObservationClient signals only for successful reads of the armed,
+// unavailable image and signals once when matching reads occur concurrently.
+func TestImageUnavailableObservationClient(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-reprepare-create-retry")
-	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "reprepare-image", "reprepare-image")
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-image-observation")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "observed-image", "v2-pctr-observed-image")
+	observer := &imageUnavailableObservationClient{Client: client, unavailable: make(chan struct{})}
+	target := &imageReadTarget{key: image.NamespacedName(), uid: image.UID}
+	observer.target.Store(target)
+
+	var readyImage apiv2.PhysicalContainerImage
+	require.NoError(t, observer.Get(ctx, target.key, &readyImage))
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, readyImage.Status.Phase)
+	require.False(t, observer.signaled.Load())
+
+	observer.target.Store(nil)
+	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, client, containerOrchestrator, image)
+	defer restoreImageInspection()
+	var unarmedImage apiv2.PhysicalContainerImage
+	require.NoError(t, observer.Get(ctx, target.key, &unarmedImage))
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseUnknown, unarmedImage.Status.Phase)
+	require.False(t, observer.signaled.Load())
+
+	missingKey := ctrl_client.ObjectKey{Namespace: namespace.Name, Name: "different-image"}
+	observer.target.Store(&imageReadTarget{key: missingKey, uid: image.UID})
+	var unrelatedImage apiv2.PhysicalContainerImage
+	require.NoError(t, observer.Get(ctx, target.key, &unrelatedImage))
+	require.False(t, observer.signaled.Load())
+	var missingImage apiv2.PhysicalContainerImage
+	missingErr := observer.Get(ctx, missingKey, &missingImage)
+	require.True(t, apierrors.IsNotFound(missingErr))
+	require.False(t, observer.signaled.Load())
+
+	observer.target.Store(&imageReadTarget{key: target.key, uid: "different-uid"})
+	var replacedImage apiv2.PhysicalContainerImage
+	require.NoError(t, observer.Get(ctx, target.key, &replacedImage))
+	require.False(t, observer.signaled.Load())
+
+	observer.target.Store(target)
+	cancelledCtx, cancelRead := context.WithCancel(ctx)
+	cancelRead()
+	staleImage := unarmedImage.DeepCopy()
+	cancelledErr := observer.Get(cancelledCtx, target.key, staleImage)
+	require.ErrorIs(t, cancelledErr, context.Canceled)
+	require.False(t, observer.signaled.Load())
+
+	release := make(chan struct{})
+	releaseRead := sync.OnceFunc(func() { close(release) })
+	barrierClient := &imageReadBarrierClient{Client: client, entered: make(chan struct{}), release: release}
+	delayedObserver := &imageUnavailableObservationClient{Client: barrierClient, unavailable: make(chan struct{})}
+	delayedReadResult := make(chan error, 1)
+	var delayedRead sync.WaitGroup
+	defer func() {
+		releaseRead()
+		cancel()
+		delayedRead.Wait()
+	}()
+	delayedRead.Go(func() {
+		var currentImage apiv2.PhysicalContainerImage
+		delayedReadResult <- delayedObserver.Get(ctx, target.key, &currentImage)
+	})
+	select {
+	case <-barrierClient.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	delayedObserver.target.Store(target)
+	releaseRead()
+	select {
+	case readErr, ok := <-delayedReadResult:
+		require.True(t, ok)
+		require.NoError(t, readErr)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.False(t, delayedObserver.signaled.Load())
+
+	const readCount = 8
+	readErrors := make(chan error, readCount)
+	var readers sync.WaitGroup
+	for range readCount {
+		readers.Go(func() {
+			var currentImage apiv2.PhysicalContainerImage
+			readErrors <- observer.Get(ctx, target.key, &currentImage)
+		})
+	}
+	readers.Wait()
+	close(readErrors)
+	for readErr := range readErrors {
+		require.NoError(t, readErr)
+	}
+	select {
+	case <-observer.unavailable:
+	default:
+		t.Fatal("the unavailable image was not observed")
+	}
+}
+
+// Verifies that PhysicalContainerReconciler rechecks dependencies after a create failure and waits for an unavailable image before retrying creation.
+func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+
+	var imageObserver *imageUnavailableObservationClient
+	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		PhysicalContainerController|PhysicalContainerImageController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			imageObserver = &imageUnavailableObservationClient{Client: apiClient, unavailable: make(chan struct{})}
+			return imageObserver
+		}})
+	require.NoError(t, startupErr)
+	orchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	apiClient := serverInfo.Client
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pctr-reprepare-create-retry"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, apiClient, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "reprepare-image", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "reprepare-image"}},
+	}
+	require.NoError(t, apiClient.Create(ctx, image))
+	readyImage := waitObjectAssumesStateEx(t, ctx, apiClient, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+	require.NotEmpty(t, readyImage.UID)
+
 	containerName := "v2-pctr-reprepare-create-retry-container"
-	containerOrchestrator.ScheduleContainerCreationWithPostCreateFailure(containerName, errors.New("create failed once"))
+	orchestrator.ScheduleContainerCreationWithPostCreateFailure(containerName, errors.New("create failed once"))
 	// The post-create failure leaves a container behind. When the PhysicalContainer controller retries
 	// creation, it removes that partial container before resolving its PhysicalContainerImage dependency
-	// again. Block removal until the test marks the image unavailable, so the retry cannot reach image
-	// resolution before the test changes the image state.
-	releaseRemoval := containerOrchestrator.BlockRemoveContainer(containerName)
+	// again. Block removal until the controller cache has observed the image becoming unavailable.
+	releaseRemoval := orchestrator.BlockRemoveContainer(containerName)
 	defer releaseRemoval()
 
 	container := &apiv2.PhysicalContainer{
@@ -1403,38 +1583,58 @@ func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t 
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
-			ImageRef:      image.Name,
+			ImageRef:      readyImage.Name,
 			ContainerName: containerName,
 		}},
 	}
-	require.NoError(t, client.Create(ctx, container))
+	require.NoError(t, apiClient.Create(ctx, container))
 
-	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
-		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
-		return readyCondition != nil &&
-			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateFailed, nil
+	waitRemovalErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return orchestrator.RemoveContainerCallCount(containerName) >= 1, nil
 	})
-	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
-	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.NoError(t, waitRemovalErr)
+	require.Equal(t, 1, orchestrator.CreateContainerCallCount(containerName))
 
-	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, image)
+	imageObserver.target.Store(&imageReadTarget{key: readyImage.NamespacedName(), uid: readyImage.UID})
+	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, apiClient, orchestrator, readyImage)
+	select {
+	case <-imageObserver.unavailable:
+	case <-ctx.Done():
+		t.Fatalf("waiting for the controller cache to observe the unavailable image: %v", ctx.Err())
+	}
 	releaseRemoval()
 
-	imagePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+	imagePendingContainer := waitObjectAssumesStateEx(t, ctx, apiClient, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
 		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
 		return readyCondition != nil &&
-			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady, nil
+			readyCondition.Status == metav1.ConditionFalse &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady &&
+			strings.Contains(readyCondition.Message, "PhysicalContainerImage "+strconv.Quote(readyImage.Name)), nil
 	})
 	requireReadyCondition(t, imagePendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
-	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
-	require.Equal(t, 1, containerOrchestrator.RemoveContainerCallCount(containerName))
+	require.Equal(t, 1, orchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 1, orchestrator.RemoveContainerCallCount(containerName))
 
 	restoreImageInspection()
-	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	waitObjectAssumesStateEx(t, ctx, apiClient, readyImage.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
 
-	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
-	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
-	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+	updatedContainer := waitObjectAssumesStateEx(t, ctx, apiClient, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning, nil
+	})
+	require.NotEmpty(t, updatedContainer.Status.ContainerID)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_, removeErr := orchestrator.RemoveContainersWithoutEvents(cleanupCtx, containers.RemoveContainersOptions{
+			Containers: []string{updatedContainer.Status.ContainerID}, Force: true,
+		})
+		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+			require.NoError(t, removeErr)
+		}
+	})
+	require.Equal(t, 2, orchestrator.CreateContainerCallCount(containerName))
 }
 
 func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
@@ -2135,20 +2335,24 @@ func waitCreateContainerCallCount(t *testing.T, ctx context.Context, name string
 func simulateV2PhysicalContainerImageUnavailable(
 	t *testing.T,
 	ctx context.Context,
+	apiClient ctrl_client.Client,
+	orchestrator *ctrl_testutil.TestContainerOrchestrator,
 	image *apiv2.PhysicalContainerImage,
 ) func() {
 	t.Helper()
 
-	restoreImageInspection := containerOrchestrator.FailInspectImage(image.Status.ImageID, containers.ErrNotFound)
+	restoreImageInspection := orchestrator.FailInspectImage(image.Status.ImageID, containers.ErrNotFound)
 	t.Cleanup(restoreImageInspection)
-	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
+	require.NoError(t, retryOnConflictEx[apiv2.PhysicalContainerImage](ctx, apiClient, image.NamespacedName(), func(updateCtx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
 		if currentImage.Annotations == nil {
 			currentImage.Annotations = map[string]string{}
 		}
 		currentImage.Annotations["test.dcp.microsoft.com/reconcile"] = "image-unavailable"
-		return client.Update(ctx, currentImage)
+		return apiClient.Update(updateCtx, currentImage)
 	}))
-	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	waitObjectAssumesStateEx(t, ctx, apiClient, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseUnknown, nil
+	})
 	return restoreImageInspection
 }
 
