@@ -12,13 +12,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
+	"github.com/cenkalti/backoff/v4"
 	"golang.org/x/sys/unix"
 
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 // ptyMaster represents the master side of a Unix pseudo-terminal
@@ -130,7 +134,7 @@ var _ = PTY((*unixPTY)(nil))
 func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *CommandSpec) (*PseudoTerminalProcess, error) {
 	cols, rows := NormalizeTerminalDimensions(spec.Cols, spec.Rows)
 
-	master, slave, err := pty_open()
+	master, slave, err := pty_open(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to allocate PTY: %w", err)
 	}
@@ -194,9 +198,11 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 }
 
 // Allocates a pseudoterminal and returns the master and slave file descriptors.
-func pty_open() (master *ptyMaster, slave *ptySlave, err error) {
+func pty_open(ctx context.Context) (master *ptyMaster, slave *ptySlave, err error) {
 	var masterFile *os.File
-	masterFile, err = os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	masterFile, err = openPTYMaster(ctx, func() (*os.File, error) {
+		return os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("openpt: %w", err)
 	}
@@ -227,6 +233,27 @@ func pty_open() (master *ptyMaster, slave *ptySlave, err error) {
 	}
 	slave = &ptySlave{slaveFile}
 	return master, slave, nil
+}
+
+func openPTYMaster(ctx context.Context, openMaster func() (*os.File, error)) (*os.File, error) {
+	// XNU's ptmx_get_ioctl/ptcopen returns EREDRIVEOPEN (-6) when concurrent
+	// opens select the same minor number. Retry the open, not the later ioctls.
+	// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty_ptmx.c
+	const darwinRedriveOpen = ^syscall.Errno(5)
+	policy := backoff.WithMaxRetries(backoff.NewConstantBackOff(time.Millisecond), 9)
+	return resiliency.RetryGet(ctx, policy, func() (*os.File, error) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, resiliency.Permanent(ctxErr)
+		}
+		file, openErr := openMaster()
+		if ctxErr := ctx.Err(); openErr != nil && ctxErr != nil {
+			return nil, resiliency.Permanent(errors.Join(openErr, ctxErr))
+		}
+		if openErr != nil && (runtime.GOOS != "darwin" || !errors.Is(openErr, darwinRedriveOpen)) {
+			return nil, resiliency.Permanent(openErr)
+		}
+		return file, openErr
+	})
 }
 
 // winsize describes the terminal size.
