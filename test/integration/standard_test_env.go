@@ -45,7 +45,6 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestTunnelControlClient
 	TerminalProcessFactoryDispatcher *ctrl_testutil.TerminalProcessFactoryDispatcher
 	ContainerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
-	ControllerClient                 ctrl_client.Client // Reads use the controller manager's shared cache.
 	StateStore                       *statestore.Store
 	ResourceLeaseOwner               process.ProcessHandle
 	OutputCleanupQueue               *resiliency.WorkQueue
@@ -629,7 +628,6 @@ func StartTestEnvironmentWithOptions(
 	}()
 
 	testEnvironmentInfo = &TestEnvironmentInfo{
-		ControllerClient:                 mgr.GetClient(),
 		TestProcessExecutor:              pex,
 		TestProcessExecutableRunner:      exeRunner,
 		TestIdeRunner:                    ir,

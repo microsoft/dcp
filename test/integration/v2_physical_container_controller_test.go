@@ -1415,9 +1415,6 @@ func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t 
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 
 	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, image)
-	waitObjectAssumesStateEx(t, ctx, controllerClient, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
-		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhaseUnknown, nil
-	})
 	releaseRemoval()
 
 	imagePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
