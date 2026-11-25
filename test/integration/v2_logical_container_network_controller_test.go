@@ -374,9 +374,9 @@ func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCre
 	require.Len(t, retained, 1)
 }
 
-// Verifies that LogicalContainerNetwork recovers from a backing lookup failure with its original
-// network and backing identities, then completes deletion.
-func TestV2LogicalContainerNetworkControllerRetriesBackingLookup(t *testing.T) {
+// Verifies that LogicalContainerNetwork recovers from a physical resource lookup failure with its original
+// network and physical resource identities, then completes deletion.
+func TestV2LogicalContainerNetworkControllerRetriesPhysicalLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -414,18 +414,18 @@ func TestV2LogicalContainerNetworkControllerRetriesBackingLookup(t *testing.T) {
 	requireReadyCondition(t, recovered.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerNetworkReasonReady)
 	require.Equal(t, ready.Status.NetworkID, recovered.Status.NetworkID)
 	require.Equal(t, ready.Status.PhysicalNetworkRef, recovered.Status.PhysicalNetworkRef)
-	var backings apiv2.PhysicalContainerNetworkList
-	require.NoError(t, apiClient.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, backings.Items, 1)
-	require.Equal(t, physicalUID, backings.Items[0].UID)
+	var physicalResources apiv2.PhysicalContainerNetworkList
+	require.NoError(t, apiClient.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, physicalResources.Items, 1)
+	require.Equal(t, physicalUID, physicalResources.Items[0].UID)
 	require.NoError(t, apiClient.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, network)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
 }
 
-// Verifies that LogicalContainerNetwork discovers an uncertain-create backing by owner, fails
+// Verifies that LogicalContainerNetwork discovers an uncertain-create physical resource by owner, fails
 // on duplicate ownership, and deletes all owned children despite an empty cached owner list.
-func TestV2LogicalContainerNetworkControllerDiscoversOwnedBackings(t *testing.T) {
+func TestV2LogicalContainerNetworkControllerDiscoversOwnedPhysicalResources(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -455,7 +455,7 @@ func TestV2LogicalContainerNetworkControllerDiscoversOwnedBackings(t *testing.T)
 		ObjectMeta: metav1.ObjectMeta{Name: "duplicate", Namespace: namespace.Name, OwnerReferences: physical.OwnerReferences},
 		Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: ready.Status.NetworkID},
 	}
-	controllers.InitializeLogicalBackingFinalizers(duplicate, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
+	controllers.InitializePhysicalResourceFinalizers(duplicate, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
 	require.NoError(t, serverInfo.Client.Create(ctx, duplicate))
 	unknown := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
@@ -506,9 +506,9 @@ func (apiClient *failingNetworkReadyStatusClient) Patch(
 		return patchErr
 	}
 	if _, isNetwork := object.(*apiv2.PhysicalContainerNetwork); isNetwork &&
-		!slices.Contains(object.GetFinalizers(), controllers.LogicalBackingFinalizer) &&
+		!slices.Contains(object.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer) &&
 		apiClient.releaseResponseLost.CompareAndSwap(false, true) {
-		return errors.New("logical network backing release response lost")
+		return errors.New("logical physical network release response lost")
 	}
 	return nil
 }
@@ -534,13 +534,13 @@ func (writer *networkReadyStatusWriter) Patch(
 	return writer.SubResourceWriter.Patch(ctx, object, patch, options...)
 }
 
-// Verifies that LogicalContainerNetwork retains the backing API object across failed status
+// Verifies that LogicalContainerNetwork retains the physical resource API object across failed status
 // publication and cleanup, then records ownership and releases only its own hold on logical deletion.
-func TestV2LogicalContainerNetworkControllerHoldsBackingUntilAuthorizedDeletion(t *testing.T) {
+func TestV2LogicalContainerNetworkControllerHoldsPhysicalUntilAuthorizedDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	const namespaceName = "v2-logical-network-backing-hold"
+	const namespaceName = "v2-logical-network-physical-hold"
 	var statusClient *failingNetworkReadyStatusClient
 	serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalContainerNetworkController|PhysicalContainerNetworkController,
@@ -577,7 +577,7 @@ func TestV2LogicalContainerNetworkControllerHoldsBackingUntilAuthorizedDeletion(
 	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{
 		Namespace: namespace.Name, Name: "logical-" + string(network.UID),
 	}, physical))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
 	const independentFinalizer = "test.dcp.microsoft.com/independent-owner"
 	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerNetwork) error {
@@ -593,7 +593,7 @@ func TestV2LogicalContainerNetworkControllerHoldsBackingUntilAuthorizedDeletion(
 	physical = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
 	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
 	statusClient.fail.Store(false)
@@ -618,9 +618,9 @@ func TestV2LogicalContainerNetworkControllerHoldsBackingUntilAuthorizedDeletion(
 	require.True(t, statusClient.logicalFinalizerConflict.Load())
 }
 
-// Verifies that LogicalContainerNetwork reports terminal failure when its backing finalizer is removed
+// Verifies that LogicalContainerNetwork reports terminal failure when its physical resource finalizer is removed
 // and never recreates the missing PhysicalContainerNetwork or container network.
-func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *testing.T) {
+func TestV2LogicalContainerNetworkControllerFailsWhenPhysicalHoldIsRemoved(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -629,7 +629,7 @@ func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *tes
 	require.NoError(t, startupErr)
 	orchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isTestOrchestrator)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-network-backing-violation"}}
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-network-physical-violation"}}
 	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
 		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
@@ -645,10 +645,10 @@ func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *tes
 	})
 	physical := &apiv2.PhysicalContainerNetwork{}
 	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: ready.Status.PhysicalNetworkRef}, physical))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerNetwork) error {
 		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
-			return finalizer == controllers.LogicalBackingFinalizer
+			return finalizer == controllers.LogicalPhysicalHoldFinalizer
 		})
 		return serverInfo.Client.Update(updateCtx, current)
 	}))
@@ -681,7 +681,7 @@ func (reader *namespaceWorkloadFailureReader) Get(
 	return reader.Reader.Get(ctx, key, obj, opts...)
 }
 
-// Verifies that LogicalContainerNetwork keeps its startup lease and physical backing while
+// Verifies that LogicalContainerNetwork keeps its startup lease and physical resource while
 // ownership recording fails, including on deletion, then settles ownership before child removal.
 func TestV2LogicalContainerNetworkControllerRetriesNamespaceOwnershipFailure(t *testing.T) {
 	t.Parallel()
@@ -748,7 +748,7 @@ func TestV2LogicalContainerNetworkControllerRetriesNamespaceOwnershipFailure(t *
 		func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
 			return !current.DeletionTimestamp.IsZero(), nil
 		})
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner))
 	reader.fail.Store(false)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, network)
@@ -902,7 +902,7 @@ func TestV2LogicalContainerNetworkControllerObservesExistingNetwork(t *testing.T
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
-// Verifies that LogicalContainer declares its backing from a pending network's published reference,
+// Verifies that LogicalContainer declares its physical resource from a pending network's published reference,
 // while PhysicalContainerReconciler waits for the container network to be ready and owns attachment requests.
 func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	t.Parallel()
@@ -985,7 +985,7 @@ func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	waitRuntimeNetworkMissing(t, ctx, readyNetwork.Status.NetworkID)
 }
 
-// Verifies that LogicalContainer checks every logical network before waiting for a backing
+// Verifies that LogicalContainer checks every logical network before waiting for a physical resource
 // reference, rejects a later failed network, and releases its creation lease without physical creation.
 func TestV2LogicalContainerControllerRejectsFailedNetwork(t *testing.T) {
 	t.Parallel()
@@ -1298,7 +1298,7 @@ func TestV2LogicalContainerNetworkControllerDeletesAfterBoundedLookup(t *testing
 	}
 }
 
-// Verifies that LogicalContainerNetwork retains its backing API object while physical deletion
+// Verifies that LogicalContainerNetwork retains its physical resource API object while physical deletion
 // settles in-flight creation, then records retained ownership before releasing its hold and lease.
 func TestV2LogicalContainerNetworkControllerSettlesPersistenceDuringDeletion(t *testing.T) {
 	t.Parallel()
@@ -1327,7 +1327,7 @@ func TestV2LogicalContainerNetworkControllerSettlesPersistenceDuringDeletion(t *
 	physical := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.NotEmpty(t, physical.Finalizers)
 	deleting := &apiv2.LogicalContainerNetwork{}
 	require.NoError(t, client.Get(ctx, network.NamespacedName(), deleting))
@@ -1349,15 +1349,15 @@ func TestV2LogicalContainerNetworkControllerSettlesPersistenceDuringDeletion(t *
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
-// Verifies that LogicalContainerNetwork observes creation completed after backing deletion is requested
+// Verifies that LogicalContainerNetwork observes creation completed after physical resource deletion is requested
 // and records retained workload ownership before releasing its creation lease.
-func TestV2LogicalContainerNetworkControllerRecordsCreationAfterBackingDeletionRequest(t *testing.T) {
+func TestV2LogicalContainerNetworkControllerRecordsCreationAfterPhysicalDeletionRequest(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	namespace := createActiveV2Namespace(t, ctx, "v2-logical-network-backing-delete-create")
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-network-physical-delete-create")
 	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
-		current.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: "backing-delete-network-workload"}
+		current.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: "physical-delete-network-workload"}
 		return client.Update(updateCtx, current)
 	}))
 	networkName := namespace.Name + "-runtime"
@@ -1383,7 +1383,7 @@ func TestV2LogicalContainerNetworkControllerRecordsCreationAfterBackingDeletionR
 	waitResourceLeaseReleased(t, ctx, network)
 	record, recordErr := testStateStore.GetPersistentNetwork(ctx, network.GetLeaseKey())
 	require.NoError(t, recordErr)
-	require.Equal(t, commonapi.WorkloadID("backing-delete-network-workload"), record.WorkloadID)
+	require.Equal(t, commonapi.WorkloadID("physical-delete-network-workload"), record.WorkloadID)
 	require.Equal(t, networkName, record.NetworkName)
 	require.NotEmpty(t, record.NetworkID)
 	observed := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
@@ -1394,7 +1394,7 @@ func TestV2LogicalContainerNetworkControllerRecordsCreationAfterBackingDeletionR
 	require.NoError(t, client.Get(ctx, physicalName, physical))
 	require.Equal(t, record.NetworkID, physical.Status.NetworkID)
 	require.Equal(t, apiv2.PhysicalContainerNetworkPhasePending, physical.Status.Phase)
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
@@ -1491,7 +1491,7 @@ func TestV2LogicalContainerNetworkControllerDeletesUnstartedPhysicalDuringNamesp
 		Namespace: namespace.Name, Name: "logical-" + string(network.UID),
 	}, physical))
 	require.True(t, metav1.IsControlledBy(physical, network))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
 	require.NoError(t, serverInfo.Client.Delete(ctx, physical))
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner))
@@ -1652,7 +1652,7 @@ func TestV2LogicalContainerNetworkControllerSerializesV1Startup(t *testing.T) {
 }
 
 // Verifies that LogicalContainerNetwork preserves physical creation failure and the unrelated
-// network causing it, and does not poll after terminal backing observation failures.
+// network causing it, and does not poll after terminal physical resource observation failures.
 func TestV2LogicalContainerNetworkControllerReportsPhysicalCreationFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

@@ -342,7 +342,7 @@ func StartTestEnvironmentWithOptions(
 
 	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	controllerAPIReader := mgr.GetAPIReader()
-	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController|ProjectController) != 0 && options.DecorateAPIReader != nil {
 		controllerAPIReader = options.DecorateAPIReader(controllerAPIReader)
 		if controllerAPIReader == nil {
 			return nil, nil, fmt.Errorf("api reader decorator returned nil")
@@ -396,6 +396,25 @@ func StartTestEnvironmentWithOptions(
 		}
 		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
+		}
+	}
+
+	if inclCtrl&ProjectController != 0 {
+		projectExecutor := process.NewOSExecutor(log.WithName("ProjectProcessExecutor"))
+		_ = context.AfterFunc(ctx, projectExecutor.Dispose)
+		projectProcessR := controllers.NewProjectProcessReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectProcessReconciler"), projectExecutor)
+		if timingErr := projectProcessR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure ProjectProcess reconciliation timing: %w", timingErr)
+		}
+		if setupErr := projectProcessR.SetupWithManager(mgr, instanceTag+"-ProjectProcessReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ProjectProcess reconciler: %w", setupErr)
+		}
+		projectContainerR := controllers.NewProjectContainerReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectContainerReconciler"), projectExecutor, serverInfo.ContainerOrchestrator.Name())
+		if timingErr := projectContainerR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure ProjectContainer reconciliation timing: %w", timingErr)
+		}
+		if setupErr := projectContainerR.SetupWithManager(mgr, instanceTag+"-ProjectContainerReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ProjectContainer reconciler: %w", setupErr)
 		}
 	}
 

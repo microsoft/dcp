@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -67,7 +68,8 @@ type Options struct {
 }
 
 type Store struct {
-	db   *sql.DB
+	// db is swapped atomically because Close can run while queued work is still using the store.
+	db   atomic.Pointer[sql.DB]
 	path string
 	log  logr.Logger
 }
@@ -151,7 +153,7 @@ func (s *Store) openAndConfigure(ctx context.Context, busyTimeout time.Duration)
 		if openErr != nil {
 			return false, openErr
 		}
-		s.db = db
+		s.db.Store(db)
 
 		configureErr := s.configure(attemptCtx, busyTimeout)
 		if configureErr == nil {
@@ -299,20 +301,25 @@ func (s *Store) Path() string {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-
-	closeErr := s.db.Close()
-	s.db = nil
-	return closeErr
+	db := s.db.Swap(nil)
+	if db == nil {
+		return nil
+	}
+	return db.Close()
 }
 
 func (s *Store) requireDB() (*sql.DB, error) {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil, ErrStoreNotInitialized
 	}
-	return s.db, nil
+	db := s.db.Load()
+	if db == nil {
+		return nil, ErrStoreNotInitialized
+	}
+	return db, nil
 }
 
 func (s *Store) configure(ctx context.Context, busyTimeout time.Duration) error {

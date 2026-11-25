@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,6 +26,16 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that echoStdio preserves arbitrary bytes and keeps readiness diagnostics off stdout.
+func TestEchoStdioPreservesRawBytes(t *testing.T) {
+	t.Parallel()
+	payload := []byte{0, '\r', '\n', 0xff, '\t', 0x80}
+	var output, diagnostic bytes.Buffer
+	require.NoError(t, echoStdio(bytes.NewReader(payload), &output, &diagnostic))
+	require.Equal(t, payload, output.Bytes())
+	require.Equal(t, "stdio echo ready\n", diagnostic.String())
+}
 
 // Verifies that delay reports readiness with and without children, and does not pass its readiness file to children.
 func TestDelayReportsReadinessAfterStartingChildren(t *testing.T) {

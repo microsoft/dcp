@@ -244,7 +244,7 @@ func (r *LogicalContainerExecReconciler) resolveExecutionTarget(
 		return nil, nil
 	}
 	if data.pendingPhysicalRef != "" && data.pendingPhysicalRef != target.Status.PhysicalContainerRef {
-		data.fail(apiv2.LogicalContainerExecReasonFailedToStart, "The selected logical container backing changed before physical realization.")
+		data.fail(apiv2.LogicalContainerExecReasonFailedToStart, "The selected logical physical container changed before physical realization.")
 		return nil, nil
 	}
 	return &target, nil
@@ -275,7 +275,7 @@ func (reconciler *LogicalContainerExecReconciler) ensureLogicalPhysicalContainer
 			data.fail(apiv2.LogicalContainerExecReasonFailedToStart, ownerErr.Error())
 			return noChange
 		}
-		InitializeLogicalBackingFinalizers(physical, physicalContainerExecFinalizer)
+		InitializePhysicalResourceFinalizers(physical, physicalContainerExecFinalizer)
 		data.unobservedChildren.recordCreateAttempt(physical)
 		createErr := reconciler.Create(ctx, physical)
 		if physical.UID != "" {
@@ -311,7 +311,7 @@ func (reconciler *LogicalContainerExecReconciler) ensureLogicalPhysicalContainer
 		return noChange
 	}
 	if !reflect.DeepEqual(physical.Spec, desiredSpec) {
-		data.failMissing("The backing physical execution has a different configuration.")
+		data.failMissing("The physical execution has a different configuration.")
 		return noChange
 	}
 	data.physicalUID, data.pendingPhysicalRef = physical.UID, ""
@@ -331,7 +331,7 @@ func handleLogicalContainerExecCreating(
 		log.Error(getErr, "Failed to observe physical execution")
 		return additionalReconciliationNeeded
 	}
-	change, observedState := applyLogicalContainerExecBackingStatus(resource, physical)
+	change, observedState := applyLogicalContainerExecPhysicalStatus(resource, physical)
 	if observedState == logicalContainerExecStateInvalid {
 		return change | handleInvalidLogicalContainerExecState(ctx, reconciler, resource, observedState, data, log)
 	}
@@ -350,10 +350,10 @@ func handleLogicalContainerExecRunning(
 	physical, getErr := reconciler.findPhysicalContainerExec(ctx, resource, data)
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get running execution backing")
+		log.Error(getErr, "Failed to get running physical execution")
 		return additionalReconciliationNeeded
 	}
-	change, observedState := applyLogicalContainerExecBackingStatus(resource, physical)
+	change, observedState := applyLogicalContainerExecPhysicalStatus(resource, physical)
 	if observedState == logicalContainerExecStateInvalid {
 		return change | handleInvalidLogicalContainerExecState(ctx, reconciler, resource, observedState, data, log)
 	}
@@ -378,7 +378,7 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 		child := &children.Items[i]
 		if child.Name == name && metav1.IsControlledBy(child, resource) {
 			data.unobservedChildren.observeCached(child)
-			if (data.physicalUID != "" && child.UID != data.physicalUID) || !hasFinalizer(child, LogicalBackingFinalizer) {
+			if (data.physicalUID != "" && child.UID != data.physicalUID) || !hasFinalizer(child, LogicalPhysicalHoldFinalizer) {
 				identityErr := fmt.Errorf("physical execution %q UID or logical hold changed", child.NamespacedName())
 				data.failMissing(identityErr.Error())
 				data.state = logicalContainerExecStateMissing
@@ -391,13 +391,13 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 	getErr := r.NoCacheClient.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: name}, physical)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) && data.physicalUID != "" {
-			data.failMissing("The backing physical execution no longer exists.")
+			data.failMissing("The physical execution no longer exists.")
 			data.state = logicalContainerExecStateMissing
 		}
 		return nil, getErr
 	}
 	if !metav1.IsControlledBy(physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) ||
-		!hasFinalizer(physical, LogicalBackingFinalizer) {
+		!hasFinalizer(physical, LogicalPhysicalHoldFinalizer) {
 		identityErr := fmt.Errorf("physical execution %q has a different identity, owner, or logical hold", physical.NamespacedName())
 		data.failMissing(identityErr.Error())
 		data.state = logicalContainerExecStateMissing
@@ -452,8 +452,8 @@ func (r *LogicalContainerExecReconciler) handleLogicalContainerExecDeletion(
 			if !data.failureTime.IsZero() {
 				physical.Status.FinishedAt = data.failureTime
 			}
-			backingChange, observedState := applyLogicalContainerExecBackingStatus(resource, physical)
-			change |= backingChange
+			physicalChange, observedState := applyLogicalContainerExecPhysicalStatus(resource, physical)
+			change |= physicalChange
 			if !data.terminal() {
 				data.updateLifecycleFromPhysicalContainerExec(physical, observedState)
 				if !physical.DeletionTimestamp.IsZero() && observedState == logicalContainerExecStateExited {
@@ -474,9 +474,9 @@ func (r *LogicalContainerExecReconciler) handleLogicalContainerExecDeletion(
 		if hasFinalizer(physical, physicalContainerExecFinalizer) {
 			continue
 		}
-		releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+		releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physical)
 		if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-			log.Error(releaseErr, "Failed to release logical execution backing")
+			log.Error(releaseErr, "Failed to release logical physical execution")
 
 		}
 	}
@@ -508,7 +508,7 @@ func handleLogicalContainerExecTerminal(
 	lookupData := *data
 	physical, getErr := reconciler.findPhysicalContainerExec(ctx, resource, &lookupData)
 	if getErr != nil {
-		log.Error(getErr, "Failed to refresh terminal execution backing")
+		log.Error(getErr, "Failed to refresh terminal physical execution")
 		if lookupData.state == logicalContainerExecStateMissing {
 			return data.applyMissingLogSource(resource)
 		}
@@ -517,7 +517,7 @@ func handleLogicalContainerExecTerminal(
 	if !data.failureTime.IsZero() {
 		physical.Status.FinishedAt = data.failureTime
 	}
-	change, _ := applyLogicalContainerExecBackingStatus(resource, physical)
+	change, _ := applyLogicalContainerExecPhysicalStatus(resource, physical)
 	return change
 }
 

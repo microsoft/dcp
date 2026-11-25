@@ -36,9 +36,9 @@ import (
 const logicalNetworkOwnerUIDField = ".metadata.logicalNetworkOwnerUID"
 
 var (
-	errMultipleLogicalNetworkBackings   = errors.New("multiple owned physical networks")
-	logicalContainerNetworkFinalizer    = fmt.Sprintf("%s/logicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
-	logicalContainerNetworkDataHandlers = map[logicalContainerNetworkState]logicalContainerNetworkDataHandlerFunc{
+	errMultipleLogicalNetworkPhysicalResources = errors.New("multiple owned physical networks")
+	logicalContainerNetworkFinalizer           = fmt.Sprintf("%s/logicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
+	logicalContainerNetworkDataHandlers        = map[logicalContainerNetworkState]logicalContainerNetworkDataHandlerFunc{
 		logicalContainerNetworkStatePending:            handleLogicalContainerNetworkPending,
 		logicalContainerNetworkStateWaitingForExisting: handleLogicalContainerNetworkPending,
 		logicalContainerNetworkStatePreparationFailed:  handleLogicalContainerNetworkTerminal,
@@ -190,11 +190,11 @@ func handleLogicalContainerNetworkPending(
 ) objectChange {
 	data.state = logicalContainerNetworkStatePending
 	data.reason, data.message = "", ""
-	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
+	physical, lookupErr := reconciler.findLogicalNetworkPhysical(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
 
-		log.Error(lookupErr, "Failed to discover backing physical network")
+		log.Error(lookupErr, "Failed to discover physical network")
 		return additionalReconciliationNeeded
 	}
 	if physical != nil {
@@ -361,7 +361,7 @@ func (r *LogicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	physical := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(network.UID), Namespace: network.Namespace}, Spec: spec,
 	}
-	InitializeLogicalBackingFinalizers(physical, physicalContainerNetworkFinalizer)
+	InitializePhysicalResourceFinalizers(physical, physicalContainerNetworkFinalizer)
 	ownerErr := ctrl.SetControllerReference(network, physical, r.Scheme())
 	if ownerErr != nil {
 		return nil, fmt.Errorf("set physical network owner: %w", ownerErr)
@@ -388,7 +388,7 @@ func (r *LogicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	return physical, nil
 }
 
-func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
+func (r *LogicalContainerNetworkReconciler) findLogicalNetworkPhysical(
 	ctx context.Context, network *apiv2.LogicalContainerNetwork, data *logicalContainerNetworkData,
 	reader ctrl_client.Reader, options ...ctrl_client.ListOption,
 ) (*apiv2.PhysicalContainerNetwork, error) {
@@ -399,6 +399,9 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 		lookupErr := fmt.Errorf("list owned physical networks: %w", listErr)
 		return nil, lookupErr
 	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, network, data.unobservedChildren, &children.Items); resolveErr != nil {
+		return nil, resolveErr
+	}
 	var owned *apiv2.PhysicalContainerNetwork
 	for i := range children.Items {
 		child := &children.Items[i]
@@ -406,15 +409,14 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 			continue
 		}
 		if owned != nil {
-			multipleErr := fmt.Errorf("%w: more than one PhysicalContainerNetwork belongs to %q", errMultipleLogicalNetworkBackings, network.NamespacedName())
+			multipleErr := fmt.Errorf("%w: more than one PhysicalContainerNetwork belongs to %q", errMultipleLogicalNetworkPhysicalResources, network.NamespacedName())
 			data.failMissing(multipleErr.Error())
 			return nil, multipleErr
 		}
 		owned = child
 	}
 	if owned != nil {
-		data.unobservedChildren.observeCached(owned)
-		if (data.physicalNetworkUID != "" && owned.UID != data.physicalNetworkUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
+		if (data.physicalNetworkUID != "" && owned.UID != data.physicalNetworkUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
 			identityErr := fmt.Errorf("physical network %q UID or logical hold changed", owned.NamespacedName())
 			data.failMissing(identityErr.Error())
 			return nil, identityErr
@@ -429,15 +431,15 @@ func handleLogicalContainerNetworkReady(
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
 
-	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
+	physical, lookupErr := reconciler.findLogicalNetworkPhysical(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
 
-		log.Error(lookupErr, "Failed to observe backing physical network")
+		log.Error(lookupErr, "Failed to observe physical network")
 		return additionalReconciliationNeeded
 	}
 	if physical == nil {
-		data.failMissing("The backing PhysicalContainerNetwork is no longer available.")
+		data.failMissing("The PhysicalContainerNetwork is no longer available.")
 		return additionalReconciliationNeeded
 	}
 	change := setValue(&network.Status.PhysicalNetworkRef, physical.Name)
@@ -455,11 +457,11 @@ func handleLogicalContainerNetworkCreating(
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
 
-	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
+	physical, lookupErr := reconciler.findLogicalNetworkPhysical(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
 
-		log.Error(lookupErr, "Failed to get creating network backing")
+		log.Error(lookupErr, "Failed to get creating physical network")
 		return additionalReconciliationNeeded
 	}
 	if physical == nil {
@@ -491,10 +493,10 @@ func handleLogicalContainerNetworkTerminal(
 		return change
 	}
 	lookupData := *data
-	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, &lookupData, reconciler.Client,
+	physical, lookupErr := reconciler.findLogicalNetworkPhysical(ctx, network, &lookupData, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
-		log.Error(lookupErr, "Failed to get terminal network backing")
+		log.Error(lookupErr, "Failed to get terminal physical network")
 		return change
 	}
 	if physical == nil {
@@ -559,18 +561,18 @@ func handleLogicalContainerNetworkUnknown(
 		data.failMissing("Logical network reached an invalid reconciliation state.")
 		return additionalReconciliationNeeded
 	}
-	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
+	physical, lookupErr := reconciler.findLogicalNetworkPhysical(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
 
-		log.Error(lookupErr, "Failed to get unknown network backing")
+		log.Error(lookupErr, "Failed to get unknown physical network")
 		if data.lease != nil && data.terminal() {
 			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
 		}
 		return noChange
 	}
 	if physical == nil {
-		data.failMissing("The backing PhysicalContainerNetwork is no longer available.")
+		data.failMissing("The PhysicalContainerNetwork is no longer available.")
 		if data.lease != nil {
 			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
 		}
@@ -663,9 +665,9 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 		}
 		for i := range children.Items {
 			physical := &children.Items[i]
-			releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+			releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physical)
 			if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-				log.Error(releaseErr, "Failed to release logical network backing")
+				log.Error(releaseErr, "Failed to release logical physical network")
 
 			}
 		}

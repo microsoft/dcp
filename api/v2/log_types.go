@@ -58,6 +58,38 @@ type LogSource struct {
 	Complete bool `json:"complete,omitempty"`
 }
 
+// LogStreams describes the output a resource currently exposes through its log subresource.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogStreams struct {
+	// OutputSupported indicates that the resource serves stdout and stderr sources.
+	OutputSupported bool
+	// StartupSupported indicates that the resource serves startup_stdout and startup_stderr sources.
+	StartupSupported bool
+	// Runtime is the stdout/stderr capture; nil while no capture is known.
+	Runtime *LogSource
+	// Startup is the startup_stdout/startup_stderr capture; nil while no capture is known.
+	Startup *LogSource
+	// Complete indicates that the resource will produce no further output.
+	Complete bool
+}
+
+// LogStreamingResource is implemented by every resource served by the shared V2 resource log streamer.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogStreamingResource interface {
+	resource.Object
+	// GetResourceId identifies the resource's system log.
+	GetResourceId() string
+	// GetLogStreams describes the resource's current output captures and completion.
+	GetLogStreams() LogStreams
+}
+
+// capturedLogStreams describes a resource that owns its output capture and completes with it.
+func capturedLogStreams(capture *LogSource) LogStreams {
+	return LogStreams{OutputSupported: true, Runtime: capture, Complete: capture.Complete}
+}
+
 type ResourceLogStreamer = logstream.ResourceLogStreamer[*ResourceLogOptions]
 
 // +k8s:openapi-gen=false

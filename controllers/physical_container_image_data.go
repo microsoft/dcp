@@ -22,7 +22,8 @@ type physicalContainerImageDataStateKey string
 type physicalContainerImageState int
 
 const (
-	physicalContainerImageStateBuild physicalContainerImageState = iota + 1
+	physicalContainerImageStateAcquisitionCancelled physicalContainerImageState = iota + 1
+	physicalContainerImageStateBuild
 	physicalContainerImageStateBuildFailed
 	physicalContainerImageStateBuildResultMissing
 	physicalContainerImageStateBuilt
@@ -42,6 +43,8 @@ func (state physicalContainerImageState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
+	case physicalContainerImageStateAcquisitionCancelled:
+		return "AcquisitionCancelled"
 	case physicalContainerImageStateBuild:
 		return "Build"
 	case physicalContainerImageStateBuildFailed:
@@ -167,6 +170,15 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 
 	return updated
+}
+
+// cancelUnresolvedAcquisition records a terminal outcome for an image deleted before its runtime image ID was resolved,
+// preserving an earlier terminal failure.
+func (data *physicalContainerImageData) cancelUnresolvedAcquisition() {
+	if data.imageIDVerified || physicalContainerImageProjections.projections[data.state].phase == apiv2.PhysicalContainerImagePhaseFailed {
+		return
+	}
+	data.state, data.failureMessage, data.retryAfter = physicalContainerImageStateAcquisitionCancelled, "", time.Time{}
 }
 
 func (data *physicalContainerImageData) operationInProgress() bool {
@@ -295,6 +307,11 @@ var physicalContainerImageProjections = physicalResourceProjectionTable[physical
 		physicalContainerImageStateBuildResultMissing: {
 			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonBuildResultMissingImageID,
+		},
+		physicalContainerImageStateAcquisitionCancelled: {
+			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerImageReasonAcquisitionCancelled,
+			message:         "Image was deleted before its runtime image ID was resolved.",
 		},
 		physicalContainerImageStateInvalid: {
 			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,

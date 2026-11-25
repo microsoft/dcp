@@ -38,6 +38,8 @@ var (
 		&LogicalContainerExec{},
 		&LogicalService{},
 		&ServiceEndpoint{},
+		&ProjectProcess{},
+		&ProjectContainer{},
 		&PhysicalContainerImage{},
 		&PhysicalContainer{},
 		&PhysicalContainerNetwork{},

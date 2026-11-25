@@ -181,9 +181,11 @@ func (observer *serviceReconciliationObserver) Get(ctx context.Context, key ctrl
 func waitControllerIdle(t *testing.T, ctx context.Context, lastRead *atomic.Int64) {
 	t.Helper()
 	require.NotZero(t, lastRead.Load())
-	// Allow queued retries to drain, then require silence beyond the 5-7 second retry interval.
+	quietPeriod := 2 * (max(testReconciliationTiming.StandardDelay, testReconciliationTiming.RetryDelay,
+		testReconciliationTiming.MonitoringDelay) + testReconciliationTiming.MaxDebounceDelay)
+	// Allow queued events to drain, then observe silence across two configured scheduling/debounce cycles.
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, false, func(context.Context) (bool, error) {
-		return time.Since(time.Unix(0, lastRead.Load())) >= 10*time.Second, nil
+		return time.Since(time.Unix(0, lastRead.Load())) >= quietPeriod, nil
 	}))
 }
 

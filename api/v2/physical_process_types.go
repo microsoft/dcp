@@ -229,6 +229,10 @@ func (pp *PhysicalProcess) GetLogSource() *LogSource {
 	}
 }
 
+func (pp *PhysicalProcess) GetLogStreams() LogStreams {
+	return capturedLogStreams(pp.GetLogSource())
+}
+
 func (*PhysicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&PhysicalProcessLogResource{}}
 }
@@ -385,6 +389,7 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalProcess)(nil)
+var _ LogStreamingResource = (*PhysicalProcess)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalProcess)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalProcessStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalProcessList)(nil)

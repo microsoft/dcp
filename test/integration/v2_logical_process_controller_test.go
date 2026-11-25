@@ -71,9 +71,9 @@ type processCreateLostResponseClient struct {
 	injected      atomic.Bool
 }
 
-// Verifies that forcibly removing the backing PhysicalProcess before startup settlement terminally fails the
+// Verifies that forcibly removing the PhysicalProcess before startup settlement terminally fails the
 // logical process, releases its lease, and permits namespace deletion without recreating or adopting a process.
-func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testing.T) {
+func TestV2LogicalProcessControllerFailsWhenPersistentPhysicalDisappears(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"before-observation", "during-recording"} {
 		t.Run(stage, func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testi
 			case <-ctx.Done():
 				t.Fatal("physical process was not created")
 			}
-			require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+			require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 			require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler")
 			running := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
 				return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
@@ -136,7 +136,7 @@ func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testi
 				})
 			}
 			require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner))
-			forceRemoveLogicalProcessBacking(t, ctx, server.Client, physical)
+			forceRemoveLogicalProcessPhysical(t, ctx, server.Client, physical)
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 			unblock()
 			expectedReason := apiv2.LogicalProcessReasonFailedToStart
@@ -245,7 +245,7 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 				case <-ctx.Done():
 					t.Fatal("physical creation did not complete")
 				}
-				require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+				require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 				require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler")
 				require.Equal(t, []string{"8080"}, physical.Spec.Process.Args)
 				require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: "8080"}}, physical.Spec.Process.Env)
@@ -277,7 +277,7 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 }
 
 // Verifies that LogicalProcess waits for namespace readiness, publishes its filtered launch configuration,
-// delegates session launch, and stops the process by deleting its backing PhysicalProcess.
+// delegates session launch, and stops the process by deleting its PhysicalProcess.
 func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -324,7 +324,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 }
 
 // Verifies that LogicalProcess deletion before namespace admission does not prepare lifecycle policy,
-// acquire a persistent lease, or create a backing PhysicalProcess.
+// acquire a persistent lease, or create a PhysicalProcess.
 func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -350,7 +350,7 @@ func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T)
 	require.Empty(t, children.Items)
 }
 
-type processBackingLookupFailureClient struct {
+type processPhysicalLookupFailureClient struct {
 	ctrl_client.Client
 	namespaceName string
 	fail          atomic.Bool
@@ -381,9 +381,9 @@ func (apiClient *failedStoppingProcessClient) List(
 	return nil
 }
 
-// Verifies that LogicalProcess reports a stopping backing's failure without a Ready condition.
-// The terminal failure and process identity survive later backing loss while logs become unavailable.
-func TestV2LogicalProcessControllerPreservesConditionlessStopFailureAfterBackingLoss(t *testing.T) {
+// Verifies that LogicalProcess reports a stopping physical resource's failure without a Ready condition.
+// The terminal failure and process identity survive later physical resource loss while logs become unavailable.
+func TestV2LogicalProcessControllerPreservesConditionlessStopFailureAfterPhysicalLoss(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -420,7 +420,7 @@ func TestV2LogicalProcessControllerPreservesConditionlessStopFailureAfterBacking
 		return current.Status.ExitCode != nil && current.Status.FinishedAt.Equal(&physical.Status.FinishedAt), nil
 	})
 	require.Equal(t, apiv2.LogicalProcessPhaseFailed, failed.Status.Phase)
-	forceRemoveLogicalProcessBacking(t, ctx, server.Client, physical)
+	forceRemoveLogicalProcessPhysical(t, ctx, server.Client, physical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 	unavailable := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
@@ -435,7 +435,7 @@ func TestV2LogicalProcessControllerPreservesConditionlessStopFailureAfterBacking
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-func (reader *processBackingLookupFailureClient) List(
+func (reader *processPhysicalLookupFailureClient) List(
 	ctx context.Context, object ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {
 	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
@@ -445,18 +445,18 @@ func (reader *processBackingLookupFailureClient) List(
 	return reader.Client.List(ctx, object, options...)
 }
 
-// Verifies that LogicalProcess preserves process identity during a recoverable backing lookup failure,
+// Verifies that LogicalProcess preserves process identity during a recoverable physical resource lookup failure,
 // then forwards stop and observes completion after the reader recovers without launching another process.
-func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
+func TestV2LogicalProcessControllerRetriesPhysicalObservation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	const namespaceName = "v2-process-observation-retry"
-	var reader *processBackingLookupFailureClient
+	var reader *processPhysicalLookupFailureClient
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-			reader = &processBackingLookupFailureClient{Client: apiClient, namespaceName: namespaceName}
+			reader = &processPhysicalLookupFailureClient{Client: apiClient, namespaceName: namespaceName}
 			return reader
 		}})
 	require.NoError(t, startupErr)
@@ -495,13 +495,13 @@ func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that losing the logical backing hold fails LogicalProcess without forwarding
+// Verifies that losing the logical hold fails LogicalProcess without forwarding
 // a later stop request or completing its physical log source, while logical deletion still cleans up the process.
-func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
+func TestV2LogicalProcessControllerRejectsReleasedPhysicalHold(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	namespace := createActiveV2Namespace(t, ctx, "v2-process-released-backing-hold")
+	namespace := createActiveV2Namespace(t, ctx, "v2-process-released-physical-hold")
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
 		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-released-hold-command"}}}
 	require.NoError(t, client.Create(ctx, resource))
@@ -510,7 +510,7 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	require.NoError(t, retryOnConflict(ctx, physicalName, func(updateCtx context.Context, current *apiv2.PhysicalProcess) error {
 		patch := ctrl_client.MergeFromWithOptions(current.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
-			return finalizer == controllers.LogicalBackingFinalizer
+			return finalizer == controllers.LogicalPhysicalHoldFinalizer
 		})
 		return client.Patch(updateCtx, current, patch)
 	}))
@@ -616,12 +616,12 @@ func TestV2LogicalProcessControllerStopSupersedesPreparedReplacement(t *testing.
 	})
 	require.Equal(t, replacement.Spec.LifecycleKey, stopped.Status.LifecycleKey)
 	require.Equal(t, int64(record.PID), *stopped.Status.PID)
-	var backings apiv2.PhysicalProcessList
-	require.NoError(t, apiClient.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, backings.Items, 1)
-	require.Nil(t, backings.Items[0].Spec.Process)
-	require.Equal(t, stopped.Status.PID, backings.Items[0].Spec.PID)
-	require.True(t, backings.Items[0].Spec.Stop)
+	var physicalResources apiv2.PhysicalProcessList
+	require.NoError(t, apiClient.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, physicalResources.Items, 1)
+	require.Nil(t, physicalResources.Items[0].Spec.Process)
+	require.Equal(t, stopped.Status.PID, physicalResources.Items[0].Spec.PID)
+	require.True(t, physicalResources.Items[0].Spec.Stop)
 	retained, retainedErr := environment.StateStore.GetPersistentProcess(ctx, replacement.GetLeaseKey())
 	require.NoError(t, retainedErr)
 	require.Equal(t, record.RunID, retained.RunID)
@@ -895,34 +895,34 @@ func waitLogicalProcessPhase(t *testing.T, ctx context.Context, name types.Names
 	})
 }
 
-type processBackingReleaseResponseClient struct {
+type processPhysicalReleaseResponseClient struct {
 	ctrl_client.Client
 	namespaceName string
 	injected      atomic.Bool
 }
 
-func (apiClient *processBackingReleaseResponseClient) Patch(
+func (apiClient *processPhysicalReleaseResponseClient) Patch(
 	ctx context.Context, object ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption,
 ) error {
 	patchErr := apiClient.Client.Patch(ctx, object, patch, options...)
 	if _, physical := object.(*apiv2.PhysicalProcess); patchErr == nil && physical &&
 		object.GetNamespace() == apiClient.namespaceName && !object.GetDeletionTimestamp().IsZero() &&
-		!slices.Contains(object.GetFinalizers(), controllers.LogicalBackingFinalizer) &&
+		!slices.Contains(object.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer) &&
 		apiClient.injected.CompareAndSwap(false, true) {
-		return errors.New("logical process backing release response lost")
+		return errors.New("logical physical process release response lost")
 	}
 	return patchErr
 }
 
 // Verifies that LogicalProcess releases its startup lease after stopping despite ownership-recording
-// failure, and completes backing cleanup despite a lost logical-hold release response.
+// failure, and completes physical resource cleanup despite a lost logical-hold release response.
 func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTerminalLease(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	const namespaceName = "v2-logical-process-ownership"
 	var reader *namespaceWorkloadFailureReader
-	var releaseClient *processBackingReleaseResponseClient
+	var releaseClient *processPhysicalReleaseResponseClient
 	serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{
@@ -931,7 +931,7 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTermi
 				return reader
 			},
 			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-				releaseClient = &processBackingReleaseResponseClient{Client: apiClient, namespaceName: namespaceName}
+				releaseClient = &processPhysicalReleaseResponseClient{Client: apiClient, namespaceName: namespaceName}
 				return releaseClient
 			},
 		})
@@ -982,7 +982,7 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTermi
 	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
-// Verifies that a polled exit of an adopted process permits completion and startup lease release
+// Verifies that a watched exit of an adopted process promptly permits completion and startup lease release
 // without consulting unavailable workload ownership or removing its existing reuse record.
 func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testing.T) {
 	t.Parallel()
@@ -1025,12 +1025,15 @@ func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testi
 	})
 	require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, resource, environment.ResourceLeaseOwner))
 	require.NoError(t, environment.TestProcessExecutor.StopProcess(ctx, handle))
+	// This bound distinguishes exit notification from the 30-second monitoring fallback.
+	exitCtx, cancelExit := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelExit()
 	physicalName := types.NamespacedName{Namespace: namespaceName, Name: running.Status.PhysicalProcessRef}
-	waitObjectAssumesStateEx(t, ctx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
+	waitObjectAssumesStateEx(t, exitCtx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.Reason == string(apiv2.PhysicalProcessReasonRuntimeProcessExited), nil
 	})
-	completed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+	completed := waitObjectAssumesStateEx(t, exitCtx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
 	requireReadyCondition(t, completed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
@@ -1132,7 +1135,7 @@ func (gate *retainedProcessLaunchGate) StartProcess(
 	return gate.Executor.StartProcess(ctx, command, handler, flags, create)
 }
 
-// Verifies that LogicalProcess requests backing deletion during an in-flight retained launch,
+// Verifies that LogicalProcess requests physical resource deletion during an in-flight retained launch,
 // preserves its identity for ownership recording, and does not block unrelated process launches.
 func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 	t.Parallel()
@@ -1183,7 +1186,7 @@ func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 				return !current.DeletionTimestamp.IsZero(), nil
 			})
 			require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
-			require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+			require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 			require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler")
 			unblock()
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
@@ -1201,7 +1204,7 @@ func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 	}
 }
 
-func forceRemoveLogicalProcessBacking(
+func forceRemoveLogicalProcessPhysical(
 	t *testing.T, ctx context.Context, apiClient ctrl_client.Client, physical *apiv2.PhysicalProcess,
 ) {
 	t.Helper()
@@ -1209,7 +1212,7 @@ func forceRemoveLogicalProcessBacking(
 	require.NoError(t, retryOnConflictEx(ctx, apiClient, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalProcess) error {
 		patch := ctrl_client.MergeFromWithOptions(current.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
-			return finalizer == controllers.LogicalBackingFinalizer
+			return finalizer == controllers.LogicalPhysicalHoldFinalizer
 		})
 		return apiClient.Patch(updateCtx, current, patch)
 	}))

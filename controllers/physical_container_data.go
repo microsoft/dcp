@@ -42,7 +42,8 @@ func physicalContainerRuntimeState(status containers.ContainerStatus) physicalCo
 }
 
 const (
-	physicalContainerStateCleanupFailed physicalContainerState = iota + 1
+	physicalContainerStateAwaitingStart physicalContainerState = iota + 1
+	physicalContainerStateCleanupFailed
 	physicalContainerStateCleanupRetry
 	physicalContainerStateCopyFiles
 	physicalContainerStateCreate
@@ -82,6 +83,8 @@ func (state physicalContainerState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
+	case physicalContainerStateAwaitingStart:
+		return "AwaitingStart"
 	case physicalContainerStateCleanupFailed:
 		return "CleanupFailed"
 	case physicalContainerStateCleanupRetry:
@@ -182,6 +185,9 @@ type physicalContainerData struct {
 
 	// Earliest time at which a failed operation should be retried.
 	retryAfter time.Time
+
+	// Whether the retained-container lifecycle monitor has been launched.
+	retainedMonitorStarted bool
 }
 
 func (data *physicalContainerData) Clone() *physicalContainerData {
@@ -195,6 +201,7 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 		portMappingFailureMessage: data.portMappingFailureMessage,
 		cleanupMessage:            data.cleanupMessage,
 		retryAfter:                data.retryAfter,
+		retainedMonitorStarted:    data.retainedMonitorStarted,
 	}
 }
 
@@ -234,6 +241,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	}
 	if !data.retryAfter.Equal(other.retryAfter) {
 		data.retryAfter = other.retryAfter
+		updated = true
+	}
+	if data.retainedMonitorStarted != other.retainedMonitorStarted {
+		data.retainedMonitorStarted = other.retainedMonitorStarted
 		updated = true
 	}
 
@@ -350,6 +361,10 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		},
 		physicalContainerStateFileCopyFailed: {
 			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonFileCopyFailed,
+		},
+		physicalContainerStateAwaitingStart: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonAwaitingStart,
+			message: "Physical container is prepared and waiting to be started.", requeue: true, requeueDelay: MonitoringDelay,
 		},
 		physicalContainerStateStart: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStarting,

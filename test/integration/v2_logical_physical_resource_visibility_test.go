@@ -29,17 +29,17 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-type undecodedBackingClient struct {
+type undecodedPhysicalClient struct {
 	ctrl_client.Client
 	kind                string
 	committedCreates    atomic.Uint32
 	processVisibleLists atomic.Uint32
 }
 
-func (apiClient *undecodedBackingClient) Create(
+func (apiClient *undecodedPhysicalClient) Create(
 	ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption,
 ) error {
-	if metav1.GetControllerOf(object) == nil || !apiClient.matchesBacking(object) {
+	if metav1.GetControllerOf(object) == nil || !apiClient.matchesPhysical(object) {
 		return apiClient.Client.Create(ctx, object, options...)
 	}
 	committed := object.DeepCopyObject().(ctrl_client.Object)
@@ -48,10 +48,10 @@ func (apiClient *undecodedBackingClient) Create(
 		return createErr
 	}
 	apiClient.committedCreates.Add(1)
-	return errors.New("physical backing Create committed without decoding its response")
+	return errors.New("physical resource Create committed without decoding its response")
 }
 
-func (apiClient *undecodedBackingClient) matchesBacking(object ctrl_client.Object) bool {
+func (apiClient *undecodedPhysicalClient) matchesPhysical(object ctrl_client.Object) bool {
 	switch object.(type) {
 	case *apiv2.PhysicalContainer:
 		return apiClient.kind == "container"
@@ -68,7 +68,7 @@ func (apiClient *undecodedBackingClient) matchesBacking(object ctrl_client.Objec
 	}
 }
 
-func (apiClient *undecodedBackingClient) List(
+func (apiClient *undecodedPhysicalClient) List(
 	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {
 	listErr := apiClient.Client.List(ctx, objects, options...)
@@ -109,7 +109,7 @@ func (apiClient *undecodedBackingClient) List(
 	return nil
 }
 
-type undecodedBackingReader struct {
+type undecodedPhysicalReader struct {
 	ctrl_client.Reader
 	kind             string
 	logicalName      types.NamespacedName
@@ -117,7 +117,7 @@ type undecodedBackingReader struct {
 	deletionFailures atomic.Uint32
 }
 
-func (reader *undecodedBackingReader) Get(
+func (reader *undecodedPhysicalReader) Get(
 	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
 ) error {
 	getErr := reader.Reader.Get(ctx, key, object, options...)
@@ -155,7 +155,7 @@ func (reader *undecodedBackingReader) Get(
 	return nil
 }
 
-func (reader *undecodedBackingReader) List(
+func (reader *undecodedPhysicalReader) List(
 	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {
 	target := false
@@ -172,23 +172,23 @@ func (reader *undecodedBackingReader) List(
 		target = reader.kind == "exec"
 	}
 	if target {
-		return errors.New("unscoped uncached backing list")
+		return errors.New("unscoped uncached physical resource list")
 	}
 	return reader.Reader.List(ctx, objects, options...)
 }
 
-// Verifies that logical deletion confirms generated backing names after undecoded Create responses,
-// retains the owner and lease while point reads fail, and also cleans up cached unexpected-name backings.
-func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
+// Verifies that logical deletion confirms generated physical resource names after undecoded Create responses,
+// retains the owner and lease while point reads fail, and also cleans up cached unexpected-name physical resources.
+func TestV2LogicalDeletionConfirmsUnrecordedPhysicalResourcesByName(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"container", "image", "network", "process", "exec"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
-			logicalName := types.NamespacedName{Namespace: "v2-undecoded-backing-" + kind, Name: "logical"}
-			var reader *undecodedBackingReader
-			var backingClient *undecodedBackingClient
+			logicalName := types.NamespacedName{Namespace: "v2-undecoded-physical-" + kind, Name: "logical"}
+			var reader *undecodedPhysicalReader
+			var physicalResourceClient *undecodedPhysicalClient
 			included := LogicalContainerController | LogicalContainerNetworkController | PhysicalContainerController |
 				PhysicalContainerImageController | PhysicalContainerNetworkController
 			if kind == "process" {
@@ -200,11 +200,11 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 				included,
 				t.Name(), t.TempDir(), TestEnvironmentOptions{
 					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-						backingClient = &undecodedBackingClient{Client: apiClient, kind: kind}
-						return backingClient
+						physicalResourceClient = &undecodedPhysicalClient{Client: apiClient, kind: kind}
+						return physicalResourceClient
 					},
 					DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
-						reader = &undecodedBackingReader{Reader: apiReader, kind: kind, logicalName: logicalName}
+						reader = &undecodedPhysicalReader{Reader: apiReader, kind: kind, logicalName: logicalName}
 						reader.failDeletion.Store(true)
 						return reader
 					},
@@ -242,7 +242,7 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 				logical = &apiv2.LogicalProcess{
 					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
 					Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: logicalName.Namespace, Process: &apiv2.LogicalProcessConfig{
-						ExecutablePath: "v2-undecoded-backing-process-command",
+						ExecutablePath: "v2-undecoded-physical-process-command",
 					}},
 				}
 				pid := int64(99999999)
@@ -291,45 +291,45 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 			require.NoError(t, server.Client.Create(ctx, unrelated))
 			require.NoError(t, server.Client.Create(ctx, logical))
 			require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
-				return backingClient.committedCreates.Load() > 0, nil
+				return physicalResourceClient.committedCreates.Load() > 0, nil
 			}))
-			backingName := types.NamespacedName{Namespace: logicalName.Namespace, Name: "logical-" + string(logical.GetUID())}
-			var backing ctrl_client.Object
+			physicalResourceName := types.NamespacedName{Namespace: logicalName.Namespace, Name: "logical-" + string(logical.GetUID())}
+			var physicalResource ctrl_client.Object
 			switch kind {
 			case "container":
-				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainer) (bool, error) {
+				physicalResource = waitObjectAssumesStateEx(t, ctx, server.Client, physicalResourceName, func(current *apiv2.PhysicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning, nil
 				})
 			case "image":
-				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerImage) (bool, error) {
+				physicalResource = waitObjectAssumesStateEx(t, ctx, server.Client, physicalResourceName, func(current *apiv2.PhysicalContainerImage) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
 				})
 			case "network":
-				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+				physicalResource = waitObjectAssumesStateEx(t, ctx, server.Client, physicalResourceName, func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
 				})
 			case "process":
-				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalProcess) (bool, error) {
+				physicalResource = waitObjectAssumesStateEx(t, ctx, server.Client, physicalResourceName, func(current *apiv2.PhysicalProcess) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
 				})
 			case "exec":
-				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerExec) (bool, error) {
+				physicalResource = waitObjectAssumesStateEx(t, ctx, server.Client, physicalResourceName, func(current *apiv2.PhysicalContainerExec) (bool, error) {
 					return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
 				})
 			}
-			require.True(t, metav1.IsControlledBy(backing, logical))
-			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
+			require.True(t, metav1.IsControlledBy(physicalResource, logical))
+			require.Contains(t, physicalResource.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer)
 			var visible *apiv2.PhysicalProcess
 			if kind == "process" {
 				pid := int64(99999998)
 				visible = &apiv2.PhysicalProcess{
-					ObjectMeta: metav1.ObjectMeta{Name: "visible", Namespace: logicalName.Namespace, OwnerReferences: backing.GetOwnerReferences()},
+					ObjectMeta: metav1.ObjectMeta{Name: "visible", Namespace: logicalName.Namespace, OwnerReferences: physicalResource.GetOwnerReferences()},
 					Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
 				}
-				controllers.InitializeLogicalBackingFinalizers(visible, apiv2.GroupName+"/physicalprocess-reconciler")
+				controllers.InitializePhysicalResourceFinalizers(visible, apiv2.GroupName+"/physicalprocess-reconciler")
 				require.NoError(t, server.Client.Create(ctx, visible))
 				require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
-					return backingClient.processVisibleLists.Load() > 0, nil
+					return physicalResourceClient.processVisibleLists.Load() > 0, nil
 				}))
 			}
 			require.NoError(t, server.Client.Delete(ctx, logical))
@@ -339,8 +339,8 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 			require.NoError(t, server.Client.Get(ctx, logicalName, logical))
 			require.False(t, logical.GetDeletionTimestamp().IsZero())
 			require.NotEmpty(t, logical.GetFinalizers())
-			require.NoError(t, server.Client.Get(ctx, backingName, backing))
-			require.True(t, backing.GetDeletionTimestamp().IsZero())
+			require.NoError(t, server.Client.Get(ctx, physicalResourceName, physicalResource))
+			require.True(t, physicalResource.GetDeletionTimestamp().IsZero())
 			if owner, processResource := logical.(*apiv2.LogicalProcess); processResource {
 				require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, owner, environment.ResourceLeaseOwner))
 			}
@@ -357,9 +357,9 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 				require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, owner, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 				record, recordErr := environment.StateStore.GetPersistentProcess(ctx, owner.GetLeaseKey())
 				require.NoError(t, recordErr)
-				require.Equal(t, *backing.(*apiv2.PhysicalProcess).Status.PID, int64(record.PID))
+				require.Equal(t, *physicalResource.(*apiv2.PhysicalProcess).Status.PID, int64(record.PID))
 			}
-			switch child := backing.(type) {
+			switch child := physicalResource.(type) {
 			case *apiv2.PhysicalContainer:
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
 				_, inspectErr := server.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{child.Status.ContainerID}})
@@ -382,7 +382,7 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 	}
 }
 
-type unobservedBackingClient struct {
+type unobservedPhysicalClient struct {
 	ctrl_client.Client
 	images       bool
 	created      chan ctrl_client.Object
@@ -390,7 +390,7 @@ type unobservedBackingClient struct {
 	observe      <-chan struct{}
 }
 
-func (visibility *unobservedBackingClient) Get(
+func (visibility *unobservedPhysicalClient) Get(
 	ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption,
 ) error {
 	_, image := obj.(*apiv2.PhysicalContainerImage)
@@ -405,7 +405,7 @@ func (visibility *unobservedBackingClient) Get(
 	return visibility.Client.Get(ctx, key, obj, options...)
 }
 
-func (visibility *unobservedBackingClient) Create(
+func (visibility *unobservedPhysicalClient) Create(
 	ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption,
 ) error {
 	owner := metav1.GetControllerOf(obj)
@@ -444,7 +444,7 @@ func (visibility *unobservedBackingClient) Create(
 	}
 }
 
-func (visibility *unobservedBackingClient) List(
+func (visibility *unobservedPhysicalClient) List(
 	ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {
 	listErr := visibility.Client.List(ctx, list, options...)
@@ -477,8 +477,8 @@ func (visibility *unobservedBackingClient) List(
 }
 
 // Verifies that logical deletion finds unobserved creations by name alongside cached unexpected-name
-// backings, waits for their cleanup, and leaves unrelated resources untouched.
-func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testing.T) {
+// physical resources, waits for their cleanup, and leaves unrelated resources untouched.
+func TestV2LogicalContainerDeletesCreatedPhysicalResourcesBeforeCacheObservation(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name   string
@@ -497,12 +497,12 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			allowObservation := func() { observeOnce.Do(func() { close(observe) }) }
 			defer allowCreateReturn()
 			defer allowObservation()
-			var visibility *unobservedBackingClient
+			var visibility *unobservedPhysicalClient
 			server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
 				NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
 				t.Name(), t.TempDir(), TestEnvironmentOptions{
 					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-						visibility = &unobservedBackingClient{
+						visibility = &unobservedPhysicalClient{
 							Client: apiClient, images: testCase.images, created: make(chan ctrl_client.Object, 1),
 							returnCreate: returnCreate, observe: observe,
 						}
@@ -510,7 +510,7 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 					},
 				})
 			require.NoError(t, startErr)
-			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "created-backing"}}
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "created-physical"}}
 			require.NoError(t, server.Client.Create(ctx, namespace))
 			waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
 				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
@@ -518,7 +518,7 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			var unrelated ctrl_client.Object
 			config := &apiv2.LogicalContainerConfig{ImageRef: "ready-image"}
 			if testCase.images {
-				config = &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "created-backing-image"}}
+				config = &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "created-physical-image"}}
 				unrelated = &apiv2.PhysicalContainerImage{
 					ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: namespace.Name},
 					Spec:       apiv2.PhysicalContainerImageSpec{ImageID: "unrelated-image-id"},
@@ -540,7 +540,7 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			require.NoError(t, server.Client.Create(ctx, unrelated))
 			logical := &apiv2.LogicalContainer{
 				ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: namespace.Name},
-				Spec:       apiv2.LogicalContainerSpec{ContainerName: "created-backing-runtime", Container: config},
+				Spec:       apiv2.LogicalContainerSpec{ContainerName: "created-physical-runtime", Container: config},
 			}
 			require.NoError(t, server.Client.Create(ctx, logical))
 			var created ctrl_client.Object
@@ -560,26 +560,26 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			duplicate.SetUID("")
 			duplicate.SetResourceVersion("")
 			require.NoError(t, visibility.Client.Create(ctx, duplicate))
-			backings := []ctrl_client.Object{created, duplicate}
+			physicalResources := []ctrl_client.Object{created, duplicate}
 			require.NoError(t, server.Client.Delete(ctx, logical))
 			waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return !current.DeletionTimestamp.IsZero(), nil
 			})
 			allowCreateReturn()
 			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(readCtx context.Context) (bool, error) {
-				for _, backing := range backings {
-					getErr := visibility.Client.Get(readCtx, ctrl_client.ObjectKeyFromObject(backing), backing)
+				for _, physicalResource := range physicalResources {
+					getErr := visibility.Client.Get(readCtx, ctrl_client.ObjectKeyFromObject(physicalResource), physicalResource)
 					if getErr != nil {
 						return false, getErr
 					}
-					if backing.GetDeletionTimestamp().IsZero() {
+					if physicalResource.GetDeletionTimestamp().IsZero() {
 						return false, nil
 					}
 				}
 				return true, nil
 			}))
-			for _, backing := range backings {
-				require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
+			for _, physicalResource := range physicalResources {
+				require.Contains(t, physicalResource.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer)
 			}
 			require.NoError(t, visibility.Client.Get(ctx, logical.NamespacedName(), logical))
 			require.Contains(t, logical.Finalizers, apiv2.GroupName+"/logicalcontainer-reconciler")
@@ -587,8 +587,8 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			require.True(t, unrelated.GetDeletionTimestamp().IsZero())
 			allowObservation()
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
-			for _, backing := range backings {
-				switch child := backing.(type) {
+			for _, physicalResource := range physicalResources {
+				switch child := physicalResource.(type) {
 				case *apiv2.PhysicalContainer:
 					ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
 				case *apiv2.PhysicalContainerImage:
@@ -599,7 +599,7 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			require.True(t, unrelated.GetDeletionTimestamp().IsZero())
 			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 			require.Zero(t, orchestrator.CreateContainerCallCount(logical.Spec.ContainerName))
-			require.Zero(t, orchestrator.PullImageCallCount("created-backing-image"))
+			require.Zero(t, orchestrator.PullImageCallCount("created-physical-image"))
 		})
 	}
 }

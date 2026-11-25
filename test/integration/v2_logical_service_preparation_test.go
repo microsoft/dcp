@@ -619,7 +619,7 @@ func TestV2LogicalProcessFamilySelectorsResolveLocalhost(t *testing.T) {
 }
 
 // Verifies that logical argument and environment templates with invalid service references fail
-// preparation terminally without creating workload backings or image dependencies.
+// preparation terminally without creating workload physical resources or image dependencies.
 func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -806,10 +806,10 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 						stopped := waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseExited)
 						require.Equal(t, replacement.Spec.LifecycleKey, stopped.Status.LifecycleKey)
 						require.Equal(t, int64(record.PID), *stopped.Status.PID)
-						var backings apiv2.PhysicalProcessList
-						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-						require.Len(t, backings.Items, 1)
-						physical := &backings.Items[0]
+						var physicalResources apiv2.PhysicalProcessList
+						require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+						require.Len(t, physicalResources.Items, 1)
+						physical := &physicalResources.Items[0]
 						require.Equal(t, stopped.Status.PhysicalProcessRef, physical.Name)
 						require.True(t, physical.Spec.Stop)
 						require.Equal(t, stopped.Status.PID, physical.Spec.PID)
@@ -835,9 +835,9 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(expectedReason), nil
 						})
 						require.Empty(t, terminal.Status.PhysicalProcessRef)
-						var backings apiv2.PhysicalProcessList
-						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-						require.Empty(t, backings.Items)
+						var physicalResources apiv2.PhysicalProcessList
+						require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+						require.Empty(t, physicalResources.Items)
 						require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 					}
 					require.Len(t, testProcessExecutor.FindAll([]string{command}, "", nil), 1)
@@ -967,9 +967,9 @@ func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(expectedReason), nil
 						})
 						require.Empty(t, terminal.Status.PhysicalContainerRef)
-						var backings apiv2.PhysicalContainerList
-						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-						require.Empty(t, backings.Items)
+						var physicalResources apiv2.PhysicalContainerList
+						require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+						require.Empty(t, physicalResources.Items)
 						var images apiv2.PhysicalContainerImageList
 						require.NoError(t, client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
 						require.Empty(t, images.Items)

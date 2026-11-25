@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	std_slices "slices"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -83,6 +85,7 @@ const (
 	operationPostRemoveVolume
 	operationInspectVolume
 	operationExecContainer
+	operationStartAttachedContainer
 )
 
 type testContainerOperationKey struct {
@@ -724,6 +727,9 @@ type testContainer struct {
 
 	// Tracks attached terminal processes.
 	terminalProcesses []*termpty.PseudoTerminalProcess
+
+	// Tracks attached starts, which end when the container stops.
+	attachedStarts []*containerExec
 }
 
 type testImage struct {
@@ -2188,6 +2194,83 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 	return container.ID, &startEvent, nil
 }
 
+func (to *TestContainerOrchestrator) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	if operationErr := to.recordOperation(ctx, operationStartAttachedContainer, options.Container); operationErr != nil {
+		return nil, operationErr
+	}
+	to.mutex.Lock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		to.notifyContainerEvents(events)
+	}()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
+	var foundContainer *testContainer
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			foundContainer = container
+		}
+	}
+	if foundContainer == nil {
+		return nil, containers.ErrNotFound
+	}
+
+	_, startEvent, startErr := to.doStartContainer(ctx, foundContainer, containers.StreamCommandOptions{})
+	if startErr != nil {
+		return nil, startErr
+	}
+	if startEvent != nil {
+		events = append(events, *startEvent)
+	}
+
+	exitCodeChan := make(chan int32, 1)
+	execution := &containerExec{
+		options:  containers.ExecContainerOptions{Container: foundContainer.ID, StdInStream: options.StdInStream},
+		stdout:   options.StdOutStream,
+		stderr:   options.StdErrStream,
+		exitChan: exitCodeChan,
+	}
+	foundContainer.attachedStarts = append(foundContainer.attachedStarts, execution)
+	execution.stopCancellation = context.AfterFunc(ctx, func() {
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+		if !execution.exited {
+			execution.finish(process.UnknownExitCode)
+		}
+	})
+	return exitCodeChan, nil
+}
+
+// AttachedContainerStreams returns the standard input and output attached by the container's attached start.
+func (to *TestContainerOrchestrator) AttachedContainerStreams(name string) (io.Reader, io.Writer, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	for _, container := range to.containers {
+		if container.matches(name) && len(container.attachedStarts) != 0 {
+			execution := container.attachedStarts[len(container.attachedStarts)-1]
+			return execution.options.StdInStream, execution.stdout, nil
+		}
+	}
+	return nil, nil, containers.ErrNotFound
+}
+
+// StartAttachedContainerCallCount reports attached start attempts for the container.
+func (to *TestContainerOrchestrator) StartAttachedContainerCallCount(name string) int {
+	return to.operationCallCount(operationStartAttachedContainer, name)
+}
+
+// FailNextStartAttachedContainer injects an attached start failure for the container.
+func (to *TestContainerOrchestrator) FailNextStartAttachedContainer(name string, startErr error) {
+	to.queueOperationError(operationStartAttachedContainer, name, startErr)
+}
+
 func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
 	to.mutex.Lock()
 	var events []containers.EventMessage
@@ -2296,7 +2379,7 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 	return exitCodeChan, nil
 }
 
-// GetContainerExecOptions returns a copy of the recorded invocation without its output writers.
+// GetContainerExecOptions returns a copy of the recorded invocation without its input/output streams.
 func (to *TestContainerOrchestrator) GetContainerExecOptions(containerID, command string) (containers.ExecContainerOptions, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -2308,6 +2391,7 @@ func (to *TestContainerOrchestrator) GetContainerExecOptions(containerID, comman
 	options.Args = append([]string(nil), options.Args...)
 	options.Env = append([]containers.EnvVar(nil), options.Env...)
 	options.EnvFiles = append([]string(nil), options.EnvFiles...)
+	options.StdInStream = nil
 	options.StreamCommandOptions = containers.StreamCommandOptions{}
 	return options, nil
 }
@@ -2426,6 +2510,13 @@ func (to *TestContainerOrchestrator) finishContainerExecutions(container *testCo
 	for key, execution := range to.execs {
 		if strings.HasPrefix(key, container.ID+":") && !execution.exited {
 			execution.finish(execExitCode)
+		}
+	}
+	attachedStarts := container.attachedStarts
+	container.attachedStarts = nil
+	for _, execution := range attachedStarts {
+		if !execution.exited {
+			execution.finish(attachExitCode)
 		}
 	}
 	if len(container.terminalProcesses) == 0 {
@@ -2889,54 +2980,12 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 		return containers.ErrNotFound
 	}
 
-	tarWriter := usvc_io.NewTarWriter()
-
-	certificateHashes := []string{}
-	for _, item := range options.Entries {
-		switch item.Type {
-		case containers.FileSystemEntryTypeDir:
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addDirectoryErr != nil {
-				return addDirectoryErr
-			}
-		case containers.FileSystemEntryTypeSymlink:
-			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addSymlinkErr != nil {
-				if item.ContinueOnError {
-					to.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, but continueOnError is set", "SymLink", item)
-				} else {
-					return addSymlinkErr
-				}
-			}
-		case containers.FileSystemEntryTypeOpenSSL:
-			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, to.log)
-			if addCertErr != nil {
-				if item.ContinueOnError {
-					to.log.Error(addCertErr, "Failed to add certificate to tar archive, but continueOnError is set", "Certificate", item)
-				} else {
-					return addCertErr
-				}
-			}
-
-			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
-			certificateHashes = append(certificateHashes, hash)
-		default:
-			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addFileErr != nil {
-				if item.ContinueOnError {
-					to.log.Error(addFileErr, "Failed to add file to tar archive, but continueOnError is set", "File", item)
-				} else {
-					return addFileErr
-				}
-			}
-		}
-	}
-
-	if tarWriter.Empty() {
-		// Can happen if all ContinueOnError items fail
-		return nil
-	}
-
-	buffer, bufferErr := tarWriter.Buffer()
+	buffer, bufferErr := containers.CreateFilesArchive(ctx, to.log, options)
 	if bufferErr != nil {
 		return bufferErr
+	}
+	if buffer == nil {
+		return nil
 	}
 
 	to.createFiles[foundContainer.ID] = append(to.createFiles[foundContainer.ID], &containerCreateFile{
@@ -2949,6 +2998,32 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 	})
 
 	return nil
+}
+
+func (to *TestContainerOrchestrator) CopyFiles(ctx context.Context, options containers.CopyFilesOptions) error {
+	if options.Container == "" || !path.IsAbs(options.Destination) || options.Archive == nil {
+		return fmt.Errorf("container, absolute destination, and archive are required")
+	}
+	buffer := &bytes.Buffer{}
+	readCtx, cancelRead := context.WithCancel(ctx)
+	defer cancelRead()
+	if _, copyErr := io.Copy(buffer, usvc_io.NewContextReader(readCtx, options.Archive, false)); copyErr != nil {
+		return copyErr
+	}
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			to.createFiles[container.ID] = append(to.createFiles[container.ID], &containerCreateFile{
+				Destination: options.Destination, Tar: buffer,
+			})
+			return nil
+		}
+	}
+	return containers.ErrNotFound
 }
 
 func (to *TestContainerOrchestrator) GetCreatedFiles(name string) ([]*containerCreateFile, error) {

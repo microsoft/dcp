@@ -1204,12 +1204,15 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 
 	const testServerPort = 29307 // Value does not matter, just need a reasonable port number.
 
+	clientProxyPort, clientPortErr := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, clientPortErr, "Failed to get free port for client proxy")
+
 	// Missing tunnel_name must be rejected.
 	_, missingNameErr := serverProxyClient.PrepareTunnel(ctx, &proto.TunnelReq{
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
 		ServerPort:         stdproto.Int32(int32(testServerPort)),
 		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
-		ClientProxyPort:    stdproto.Int32(8080),
+		ClientProxyPort:    stdproto.Int32(int32(clientProxyPort)),
 	})
 	require.Equal(t, codes.InvalidArgument, status.Code(missingNameErr))
 
@@ -1219,7 +1222,7 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
 		ServerPort:         stdproto.Int32(int32(testServerPort)),
 		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
-		ClientProxyPort:    stdproto.Int32(8080), // Use a fixed port instead of auto-allocate for idempotency
+		ClientProxyPort:    stdproto.Int32(int32(clientProxyPort)),
 	}
 
 	// Call PrepareTunnel multiple times with the same parameters
@@ -1245,9 +1248,12 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 			"TunnelSpec from call %d is not equivalent to the first call", i+2)
 	}
 
+	differentProxyPort, differentPortErr := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, differentPortErr, "Failed to get free port for different client proxy")
+
 	// Reusing an active tunnel name with conflicting parameters must fail.
 	conflictingReq := stdproto.CloneOf(tunnelReq)
-	conflictingReq.ClientProxyPort = stdproto.Int32(8081)
+	conflictingReq.ClientProxyPort = stdproto.Int32(int32(differentProxyPort))
 	_, conflictErr := serverProxyClient.PrepareTunnel(ctx, conflictingReq)
 	require.Error(t, conflictErr)
 
@@ -1257,7 +1263,7 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
 		ServerPort:         stdproto.Int32(int32(testServerPort)),
 		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
-		ClientProxyPort:    stdproto.Int32(8081), // Different port
+		ClientProxyPort:    stdproto.Int32(int32(differentProxyPort)),
 	}
 
 	differentTunnelSpec, prepareDifferentErr := serverProxyClient.PrepareTunnel(ctx, differentTunnelReq)

@@ -296,6 +296,23 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&ProjectController != 0 {
+		projectProcessR := controllers.NewProjectProcessReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectProcessReconciler"), pe)
+		if timingErr := projectProcessR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure ProjectProcess reconciliation timing: %w", timingErr)
+		}
+		if setupErr := projectProcessR.SetupWithManager(mgr, instanceTag+"-ProjectProcessReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ProjectProcess reconciler: %w", setupErr)
+		}
+		projectContainerR := controllers.NewProjectContainerReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectContainerReconciler"), pe, serverInfo.ContainerOrchestrator.Name())
+		if timingErr := projectContainerR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure ProjectContainer reconciliation timing: %w", timingErr)
+		}
+		if setupErr := projectContainerR.SetupWithManager(mgr, instanceTag+"-ProjectContainerReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ProjectContainer reconciler: %w", setupErr)
+		}
+	}
+
 	if inclCtrl&PhysicalContainerImageController != 0 {
 		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
 			ctx,

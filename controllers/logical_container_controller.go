@@ -45,10 +45,9 @@ const (
 )
 
 var (
-	errMultipleLogicalContainerBackings = errors.New("multiple owned physical resources")
-	errLogicalNetworkFailed             = errors.New("logical network failed")
-	logicalContainerFinalizer           = fmt.Sprintf("%s/logicalcontainer-reconciler", apiv2.GroupVersion.Group)
-	logicalContainerDataHandlers        = map[logicalContainerState]logicalContainerDataHandlerFunc{
+	errMultipleLogicalContainerPhysicalResources = errors.New("multiple owned physical resources")
+	logicalContainerFinalizer                    = fmt.Sprintf("%s/logicalcontainer-reconciler", apiv2.GroupVersion.Group)
+	logicalContainerDataHandlers                 = map[logicalContainerState]logicalContainerDataHandlerFunc{
 		logicalContainerStatePending:            handleLogicalContainerPending,
 		logicalContainerStateWaitingForExisting: handleLogicalContainerPending,
 		logicalContainerStatePreparationFailed:  handleLogicalContainerTerminal,
@@ -337,7 +336,7 @@ func handleLogicalContainerPending(
 	physical, lookupErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if lookupErr != nil {
 
-		log.Error(lookupErr, "Failed to list physical containers backing the current logical container")
+		log.Error(lookupErr, "Failed to list physical containers physical resource the current logical container")
 		return additionalReconciliationNeeded
 	}
 	if physical != nil {
@@ -519,7 +518,7 @@ func handleLogicalContainerPending(
 	}
 	if physical == nil {
 		if spec.Container != nil {
-			networksResolved, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
+			networksResolved, physicalNetworks, networkMessage, resolveErr := resolveLogicalContainerNetworks(ctx, reconciler.Client, container.Namespace, container.Spec.Container.Networks)
 			if resolveErr != nil {
 
 				log.Error(resolveErr, "Failed to resolve logical container networks")
@@ -601,59 +600,6 @@ func physicalContainerConfigFromLogicalSpec(spec *apiv2.LogicalContainerSpec, po
 	return config.DeepCopy()
 }
 
-func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
-	ctx context.Context, container *apiv2.LogicalContainer,
-) (bool, []apiv2.ContainerNetworkConnectionConfig, string, error) {
-	var resolved []apiv2.ContainerNetworkConnectionConfig
-	var pendingMessage string
-	var resolutionErr error
-	for _, requested := range container.Spec.Container.Networks {
-		network := &apiv2.LogicalContainerNetwork{}
-		networkName := commonapi.AsNamespacedName(requested.NetworkRef, container.Namespace)
-		getErr := r.Get(ctx, networkName, network)
-		if apierrors.IsNotFound(getErr) {
-			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)
-			}
-			continue
-		}
-		if getErr != nil {
-			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("get LogicalContainerNetwork %q: %w", networkName, getErr))
-			continue
-		}
-		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
-			message := fmt.Sprintf("LogicalContainerNetwork %q failed.", networkName)
-			if failure := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); failure != nil {
-				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, failure.Reason, failure.Message)
-			}
-			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("%w: %s", errLogicalNetworkFailed, message))
-			continue
-		}
-		if !network.DeletionTimestamp.IsZero() {
-			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName)
-			}
-			continue
-		}
-		if network.Status.PhysicalNetworkRef == "" {
-			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
-			}
-			continue
-		}
-		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{
-			NetworkRef: network.Status.PhysicalNetworkRef, Aliases: std_slices.Clone(requested.Aliases),
-		})
-	}
-	if resolutionErr != nil {
-		return false, nil, "", resolutionErr
-	}
-	if pendingMessage != "" {
-		return false, nil, pendingMessage, nil
-	}
-	return true, resolved, "", nil
-}
-
 // createPhysicalContainerImage declares an owned image and validates AlreadyExists collisions.
 func (r *LogicalContainerReconciler) createPhysicalContainerImage(
 	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, physicalName string,
@@ -662,7 +608,7 @@ func (r *LogicalContainerReconciler) createPhysicalContainerImage(
 		ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace},
 		Spec:       apiv2.PhysicalContainerImageSpec{Image: container.Spec.Container.Image.DeepCopy()},
 	}
-	InitializeLogicalBackingFinalizers(image, physicalContainerImageFinalizer)
+	InitializePhysicalResourceFinalizers(image, physicalContainerImageFinalizer)
 	ownerErr := ctrl.SetControllerReference(container, image, r.Scheme())
 	if ownerErr != nil {
 		return nil, fmt.Errorf("set physical image owner: %w", ownerErr)
@@ -700,7 +646,7 @@ func (r *LogicalContainerReconciler) createPhysicalContainer(
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(container.UID), Namespace: container.Namespace},
 		Spec:       spec,
 	}
-	InitializeLogicalBackingFinalizers(physical, physicalContainerFinalizer)
+	InitializePhysicalResourceFinalizers(physical, physicalContainerFinalizer)
 	ownerErr := ctrl.SetControllerReference(container, physical, r.Scheme())
 	if ownerErr != nil {
 		return nil, fmt.Errorf("set physical container owner: %w", ownerErr)
@@ -757,6 +703,9 @@ func (r *LogicalContainerReconciler) findPhysicalContainer(
 		lookupErr := fmt.Errorf("list owned physical containers: %w", listErr)
 		return nil, lookupErr
 	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, container, data.unobservedChildren, &children.Items); resolveErr != nil {
+		return nil, resolveErr
+	}
 	var owned *apiv2.PhysicalContainer
 	for i := range children.Items {
 		child := &children.Items[i]
@@ -765,15 +714,14 @@ func (r *LogicalContainerReconciler) findPhysicalContainer(
 		}
 		if owned != nil {
 			multipleErr := fmt.Errorf("%w: more than one PhysicalContainer belongs to %q",
-				errMultipleLogicalContainerBackings, container.NamespacedName())
+				errMultipleLogicalContainerPhysicalResources, container.NamespacedName())
 			data.failMissing(multipleErr.Error())
 			return nil, multipleErr
 		}
 		owned = child
 	}
 	if owned != nil {
-		data.unobservedChildren.observeCached(owned)
-		if (data.physicalContainerUID != "" && owned.UID != data.physicalContainerUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
+		if (data.physicalContainerUID != "" && owned.UID != data.physicalContainerUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
 			identityErr := fmt.Errorf("physical container %q UID or logical hold changed", owned.NamespacedName())
 			data.failMissing(identityErr.Error())
 			return nil, identityErr
@@ -797,6 +745,9 @@ func (r *LogicalContainerReconciler) findPhysicalContainerImage(
 		lookupErr := fmt.Errorf("list owned physical images: %w", listErr)
 		return nil, lookupErr
 	}
+	if resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, container, data.unobservedChildren, &children.Items); resolveErr != nil {
+		return nil, resolveErr
+	}
 	var owned *apiv2.PhysicalContainerImage
 	for i := range children.Items {
 		child := &children.Items[i]
@@ -805,15 +756,14 @@ func (r *LogicalContainerReconciler) findPhysicalContainerImage(
 		}
 		if owned != nil {
 			multipleErr := fmt.Errorf("%w: more than one PhysicalContainerImage belongs to %q",
-				errMultipleLogicalContainerBackings, container.NamespacedName())
+				errMultipleLogicalContainerPhysicalResources, container.NamespacedName())
 			data.failMissing(multipleErr.Error())
 			return nil, multipleErr
 		}
 		owned = child
 	}
 	if owned != nil {
-		data.unobservedChildren.observeCached(owned)
-		if (data.physicalImageUID != "" && owned.UID != data.physicalImageUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
+		if (data.physicalImageUID != "" && owned.UID != data.physicalImageUID) || !hasFinalizer(owned, LogicalPhysicalHoldFinalizer) {
 			identityErr := fmt.Errorf("physical image %q UID or logical hold changed", owned.NamespacedName())
 			data.failMissing(identityErr.Error())
 			return nil, identityErr
@@ -837,21 +787,21 @@ func handleLogicalContainerRunning(
 	physical, getErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get running container backing")
+		log.Error(getErr, "Failed to get running physical container")
 		return change | additionalReconciliationNeeded
 	}
 	if physical == nil {
-		data.failMissing("The backing PhysicalContainer is no longer available.")
+		data.failMissing("The PhysicalContainer is no longer available.")
 		return additionalReconciliationNeeded
 	}
-	change |= applyLogicalContainerBackingStatus(container, physical)
+	change |= applyLogicalContainerPhysicalStatus(container, physical)
 	data.updateLifecycleFromPhysicalContainer(physical)
 	if data.terminal() {
 		return change | additionalReconciliationNeeded
 	}
 	if container.Spec.Stop && !data.terminal() {
 		change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
-		return change | reconciler.requestBackingStop(ctx, physical, data, log)
+		return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 	}
 	startupImage, imageErr := reconciler.findPhysicalContainerImage(ctx, container, data, reconciler.Client, container.UID)
 	if imageErr != nil {
@@ -885,19 +835,19 @@ func handleLogicalContainerCreating(
 	physical, getErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get creating container backing")
+		log.Error(getErr, "Failed to get creating physical container")
 		return additionalReconciliationNeeded
 	}
 	if physical == nil {
 		data.message = "Waiting to observe the owned PhysicalContainer."
 		return additionalReconciliationNeeded
 	}
-	change |= applyLogicalContainerBackingStatus(container, physical)
+	change |= applyLogicalContainerPhysicalStatus(container, physical)
 	if container.Spec.Stop {
 		data.updateLifecycleFromPhysicalContainer(physical)
 		change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
 		if !data.terminal() {
-			return change | reconciler.requestBackingStop(ctx, physical, data, log)
+			return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 		}
 		return change | additionalReconciliationNeeded
 	}
@@ -951,25 +901,25 @@ func handleLogicalContainerUnknown(
 	}
 	physical, getErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if getErr != nil {
-		log.Error(getErr, "Failed to get unknown container backing")
+		log.Error(getErr, "Failed to get unknown physical container")
 		if data.lease != nil && data.terminal() {
 			change |= reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
 		}
 		return change
 	}
 	if physical == nil {
-		data.failMissing("The backing PhysicalContainer is no longer available.")
+		data.failMissing("The PhysicalContainer is no longer available.")
 		if data.lease != nil {
 			change |= reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
 		}
 		return change
 	}
-	change |= applyLogicalContainerBackingStatus(container, physical)
+	change |= applyLogicalContainerPhysicalStatus(container, physical)
 	if container.Spec.Stop {
 		data.updateLifecycleFromPhysicalContainer(physical)
 		change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
 		if !data.terminal() {
-			return change | reconciler.requestBackingStop(ctx, physical, data, log)
+			return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 		}
 		return change | additionalReconciliationNeeded
 	}
@@ -1026,7 +976,7 @@ func handleLogicalContainerStopping(
 	physical, getErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get stopping container backing")
+		log.Error(getErr, "Failed to get stopping physical container")
 		return change | additionalReconciliationNeeded
 	}
 	if physical == nil {
@@ -1034,19 +984,19 @@ func handleLogicalContainerStopping(
 			data.state, data.reason, data.message = logicalContainerStateStopped, apiv2.LogicalContainerReasonStopped, "Stop was requested and no runtime container exists."
 			return change | additionalReconciliationNeeded
 		}
-		data.failMissing("The backing PhysicalContainer is no longer available.")
+		data.failMissing("The PhysicalContainer is no longer available.")
 		return change | additionalReconciliationNeeded
 	}
-	change |= applyLogicalContainerBackingStatus(container, physical)
+	change |= applyLogicalContainerPhysicalStatus(container, physical)
 	change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
 	data.updateLifecycleFromPhysicalContainer(physical)
 	if data.terminal() {
 		return change | additionalReconciliationNeeded
 	}
-	return change | reconciler.requestBackingStop(ctx, physical, data, log)
+	return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 }
 
-func (r *LogicalContainerReconciler) requestBackingStop(
+func (r *LogicalContainerReconciler) requestPhysicalStop(
 	ctx context.Context, physical *apiv2.PhysicalContainer, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	if !physical.Spec.Stop {
@@ -1078,9 +1028,9 @@ func handleLogicalContainerTerminal(
 		lookupData := *data
 		physical, getErr := reconciler.findPhysicalContainer(ctx, container, &lookupData, reconciler.Client, container.UID)
 		if getErr != nil {
-			log.Error(getErr, "Failed to get terminal container backing")
+			log.Error(getErr, "Failed to get terminal physical container")
 		} else {
-			change |= applyLogicalContainerBackingStatus(container, physical)
+			change |= applyLogicalContainerPhysicalStatus(container, physical)
 		}
 	}
 	imageLookupData := *data
@@ -1119,7 +1069,7 @@ func (reconciler *LogicalContainerReconciler) settleLogicalContainerObservedLeas
 	return noChange
 }
 
-func applyLogicalContainerBackingStatus(
+func applyLogicalContainerPhysicalStatus(
 	container *apiv2.LogicalContainer, physical *apiv2.PhysicalContainer,
 ) objectChange {
 	change := noChange
@@ -1219,7 +1169,7 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		}
 	}()
 
-	// Endpoint failures must not prevent requesting backing deletion.
+	// Endpoint failures must not prevent requesting physical resource deletion.
 	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container, logicalContainerOwnerUIDField, data.unobservedChildren)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to delete logical container endpoints")
@@ -1251,16 +1201,16 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		for i := range physicals.Items {
 			physical := &physicals.Items[i]
 			if physical.UID == data.physicalContainerUID {
-				change |= applyLogicalContainerBackingStatus(container, physical)
+				change |= applyLogicalContainerPhysicalStatus(container, physical)
 				if !data.terminal() {
 					if physical.DeletionTimestamp.IsZero() {
 						data.updateLifecycleFromPhysicalContainer(physical)
 					} else if !hasFinalizer(physical, physicalContainerFinalizer) &&
 						(physical.Spec.Stop || (physical.Spec.Container != nil && !physical.Spec.Container.RetainRuntimeContainer)) {
 						data.state, data.reason, data.message = logicalContainerStateStopped, apiv2.LogicalContainerReasonStopped,
-							"DCP stopped the backing container for deletion."
+							"DCP stopped the physical container for deletion."
 						if physical.Status.ExitCode != nil {
-							data.message = fmt.Sprintf("DCP stopped the backing container with exit code %d.", *physical.Status.ExitCode)
+							data.message = fmt.Sprintf("DCP stopped the physical container with exit code %d.", *physical.Status.ExitCode)
 						}
 					}
 				}
@@ -1298,9 +1248,9 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		}
 		for i := range physicals.Items {
 			physical := &physicals.Items[i]
-			releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+			releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physical)
 			if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-				log.Error(releaseErr, "Failed to release logical container backing", "PhysicalContainer", physical.NamespacedName())
+				log.Error(releaseErr, "Failed to release logical physical container", "PhysicalContainer", physical.NamespacedName())
 
 			}
 		}
@@ -1343,9 +1293,9 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		}
 		for i := range images.Items {
 			image := &images.Items[i]
-			releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, image)
+			releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, image)
 			if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-				log.Error(releaseErr, "Failed to release logical image backing", "PhysicalContainerImage", image.NamespacedName())
+				log.Error(releaseErr, "Failed to release logical physical image", "PhysicalContainerImage", image.NamespacedName())
 
 			}
 		}
@@ -1378,7 +1328,7 @@ func (r *LogicalContainerReconciler) deleteLogicalContainerPhysicalResource(
 		uid := resource.GetUID()
 		deleteErr := r.Delete(ctx, resource, ctrl_client.Preconditions{UID: &uid})
 		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			return fmt.Errorf("delete backing physical resource: %w", deleteErr)
+			return fmt.Errorf("delete physical resource: %w", deleteErr)
 		}
 	}
 	return nil

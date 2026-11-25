@@ -105,6 +105,18 @@ func (l *LogDescriptor) LogConsumerStarting() (string, string, error) {
 	return l.stdOut.Id(), l.stdErr.Id(), nil
 }
 
+// Returns channels that are closed when the stdout and stderr capture files are closed,
+// i.e. when the capturing source will write no more output.
+func (l *LogDescriptor) CaptureClosed() (<-chan struct{}, <-chan struct{}, error) {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+
+	if l.stdOut == nil || l.stdErr == nil {
+		return nil, nil, fmt.Errorf("log capturing is not enabled for %s", l.ResourceName.String())
+	}
+	return l.stdOut.Closed(), l.stdErr.Closed(), nil
+}
+
 // Notifies the log descriptor that a log watcher has stopped using the log files.
 func (l *LogDescriptor) LogConsumerStopped() {
 	l.lock.Lock()

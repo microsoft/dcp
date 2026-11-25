@@ -89,6 +89,9 @@ const (
 
 	// PhysicalContainerImageReasonBuildResultMissingImageID indicates that a completed build did not produce an image ID.
 	PhysicalContainerImageReasonBuildResultMissingImageID ConditionReason = "BuildResultMissingImageID"
+
+	// PhysicalContainerImageReasonAcquisitionCancelled indicates that the image was deleted before its runtime image ID was resolved.
+	PhysicalContainerImageReasonAcquisitionCancelled ConditionReason = "AcquisitionCancelled"
 )
 
 // PhysicalContainerImageSpec describes either an existing runtime image or how to create one.
@@ -208,6 +211,10 @@ func (pci *PhysicalContainerImage) GetLogSource() *LogSource {
 		Available: pci.Status.StdoutFile != "" && pci.Status.StderrFile != "",
 		Complete:  pci.Status.LogsComplete,
 	}
+}
+
+func (pci *PhysicalContainerImage) GetLogStreams() LogStreams {
+	return capturedLogStreams(pci.GetLogSource())
 }
 
 func (*PhysicalContainerImage) GenericSubResources() []apiserver_resource.GenericSubResource {
@@ -457,6 +464,7 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainerImage)(nil)
+var _ LogStreamingResource = (*PhysicalContainerImage)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerImage)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerImageStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerImageList)(nil)

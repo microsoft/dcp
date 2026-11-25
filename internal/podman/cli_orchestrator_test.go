@@ -9,8 +9,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,9 +20,54 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that Podman copies caller-owned tar streams through its native or machine transport
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	prefix := []string{"podman"}
+	if osutil.IsWindows() {
+		prefix = append(prefix, "machine", "ssh", "podman")
+	}
+	commandstreams.VerifyTarCopy(t, prefix, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, containers.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
+
+// Verifies that Podman exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
+// keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
+func TestExecContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"podman", "exec"}, true, []string{"pinned-id", "adapter", "--flag"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+			return orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
+
+// Verifies that Podman attached start forwards caller-owned stdin with --interactive only when supplied, keeps stderr
+// separate, and reports completion, cancellation and startup failure like other attached commands.
+func TestStartAttachedContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"podman", "container", "start", "--attach"}, true, []string{"pinned-id"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+			return orchestrator.StartAttachedContainer(ctx, containers.StartAttachedContainerOptions{
+				Container: "pinned-id", StdInStream: stdin,
+				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
 
 // Verifies that container inspection preserves runtime identity, environment, networking,
 // and separate entrypoint and command values alongside their combined arguments.
@@ -473,9 +518,8 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-// Verifies that PullImage captures human-readable output and retries transient identity inspection
-// failures without repeating the successful pull.
-func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
+// Verifies that PullImage captures human-readable output and returns the pulled reference without inspection.
+func TestPullImageStreamsOutputWithoutInspection(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -498,20 +542,6 @@ func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 		},
 	})
 	inspectCommand := []string{"podman", "image", "inspect", "--format", "json", "example.test/test/image:latest"}
-	var inspectionAttempts atomic.Int32
-	executor.InstallAutoExecution(internal_testutil.AutoExecution{
-		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
-		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
-			if inspectionAttempts.Add(1) <= 2 {
-				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Error: example.test/test/image:latest: image not known\n"))
-				require.NoError(t, stderrErr)
-				return 1
-			}
-			_, writeErr := execution.Cmd.Stdout.Write([]byte("[{\"Id\":\"sha256:image-id\"}]\n"))
-			require.NoError(t, writeErr)
-			return 0
-		},
-	})
 	var output bytes.Buffer
 
 	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
@@ -521,9 +551,9 @@ func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 	})
 
 	require.NoError(t, pullErr)
-	require.Equal(t, "sha256:image-id", imageID)
+	require.Equal(t, "example.test/test/image:latest", imageID)
 	require.Equal(t, "Copying blob layer\n", output.String())
-	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
+	require.Empty(t, executor.FindAll(inspectCommand, "", nil))
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 

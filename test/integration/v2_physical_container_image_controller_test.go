@@ -12,14 +12,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
@@ -515,8 +520,8 @@ func TestV2PhysicalContainerImageControllerReportsMissingExistingImage(t *testin
 	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 }
 
-// Verifies that inspection failures first report Unknown and exhaust their retry budget across
-// reconciliations before becoming terminal, retaining the previously verified image identity.
+// Verifies that persistent runtime inspection failures exhaust the bounded backoff window
+// before becoming terminal, retaining the verified identity without repeating acquisition.
 func TestV2PhysicalContainerImageControllerFailsWhenInspectionRetriesExhausted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -536,9 +541,6 @@ func TestV2PhysicalContainerImageControllerFailsWhenInspectionRetriesExhausted(t
 		return client.Update(ctx, currentImage)
 	}))
 
-	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
-	require.Equal(t, image.Status.ImageID, unknownImage.Status.ImageID)
 	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
 	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
 	require.Equal(t, image.Status.ImageID, failedImage.Status.ImageID)
@@ -1692,6 +1694,120 @@ func TestV2PhysicalContainerImageControllerPreservesBasePullBudgetWhenRuntimeBec
 	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
+// Verifies that PhysicalContainerImage reports a terminal AcquisitionCancelled failure when deleted before its image ID
+// was resolved, so a dependent PhysicalContainer fails startup instead of waiting on the held image.
+func TestV2PhysicalContainerImageControllerFailsUnresolvedImageOnDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalContainerImageController|PhysicalContainerController,
+		t.Name(), t.TempDir(), TestEnvironmentOptions{})
+	require.NoError(t, startErr)
+	orchestrator, isTestOrchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	// An unhealthy runtime keeps the image unresolved without a pull in flight.
+	orchestrator.SetRuntimeHealth(false)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-pci-delete-unresolved")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "unresolved-image", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-unresolved-source"}},
+	}
+	controllers.InitializePhysicalResourceFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+	require.NoError(t, server.Client.Create(ctx, image))
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "dependent-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef: image.Name, ContainerName: namespace.Name + "-runtime",
+		}},
+	}
+	require.NoError(t, server.Client.Create(ctx, container))
+	waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhasePending && ready != nil &&
+			apiv2.ConditionReason(ready.Reason) == apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy, nil
+	})
+
+	require.NoError(t, server.Client.Delete(ctx, image))
+	cancelled := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed && current.Status.LogsComplete, nil
+	})
+	requireReadyCondition(t, cancelled.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonAcquisitionCancelled)
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseFailed, nil
+	})
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
+	require.Zero(t, orchestrator.CreateContainerCallCount(container.Spec.Container.ContainerName))
+
+	require.NoError(t, server.Client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, server.Client, cancelled))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+}
+
+// imageFinalizerConflictClient rejects the first finalizer-removal patch of a deleting image without applying it, and
+// records any Failed status written while the image is being deleted.
+type imageFinalizerConflictClient struct {
+	ctrl_client.Client
+	conflicted     atomic.Bool
+	failedOnDelete atomic.Bool
+}
+
+func (client *imageFinalizerConflictClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
+	if image, isImage := obj.(*apiv2.PhysicalContainerImage); isImage && !image.DeletionTimestamp.IsZero() &&
+		!slices.Contains(image.Finalizers, apiv2.GroupName+"/physicalcontainerimage-reconciler") &&
+		client.conflicted.CompareAndSwap(false, true) {
+		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "physicalcontainerimages"},
+			image.Name, errors.New("injected finalizer removal conflict"))
+	}
+	return client.Client.Patch(ctx, obj, patch, options...)
+}
+
+func (client *imageFinalizerConflictClient) Status() ctrl_client.SubResourceWriter {
+	return &imageFinalizerConflictStatusWriter{SubResourceWriter: client.Client.Status(), client: client}
+}
+
+type imageFinalizerConflictStatusWriter struct {
+	ctrl_client.SubResourceWriter
+	client *imageFinalizerConflictClient
+}
+
+func (writer *imageFinalizerConflictStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
+	if image, isImage := obj.(*apiv2.PhysicalContainerImage); isImage && !image.DeletionTimestamp.IsZero() &&
+		image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
+		writer.client.failedOnDelete.Store(true)
+	}
+	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
+}
+
+// Verifies that a resolved PhysicalContainerImage whose finalizer removal is retried after a conflict completes deletion
+// without reporting AcquisitionCancelled.
+func TestV2PhysicalContainerImageControllerRetriesFinalizerRemovalWithoutCancellingResolvedImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *imageFinalizerConflictClient
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalContainerImageController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			decorated = &imageFinalizerConflictClient{Client: apiClient}
+			return decorated
+		}})
+	require.NoError(t, startErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-pci-finalizer-conflict")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "resolved-image", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-finalizer-conflict-source"}},
+	}
+	require.NoError(t, server.Client.Create(ctx, image))
+	waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+
+	require.NoError(t, server.Client.Delete(ctx, image))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+	require.True(t, decorated.conflicted.Load(), "the finalizer removal conflict was not injected")
+	require.False(t, decorated.failedOnDelete.Load(), "a resolved image must not be reported as cancelled")
+}
+
 // Verifies that PhysicalContainerImage cancels acquisition and publishes completed logs on
 // deletion even while a logical hold retains the API object.
 func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
@@ -1708,12 +1824,12 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "deleted-pulling-image",
 			Namespace:  namespace.Name,
-			Finalizers: []string{controllers.LogicalBackingFinalizer},
+			Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
-	removeDependencyHoldOnCleanup(t, ctx, image, controllers.LogicalBackingFinalizer)
+	removeDependencyHoldOnCleanup(t, ctx, image, controllers.LogicalPhysicalHoldFinalizer)
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
 
 	pullingImage := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
@@ -1724,7 +1840,7 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, image))
 
 	cleaned := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
-		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 	})
 	require.True(t, cleaned.Status.LogsComplete)
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, cleaned.Status.Phase)
@@ -1736,6 +1852,6 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 		return containerOrchestrator.HasImage(sourceImage)
 	}, 2*time.Second, 250*time.Millisecond)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, cleaned))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
 }

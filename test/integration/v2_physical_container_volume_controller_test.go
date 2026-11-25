@@ -214,12 +214,12 @@ func TestV2PhysicalContainerVolumeControllerBoundsNamespaceDeletionWhileInUse(t 
 	volume := &apiv2.PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "in-use-volume", Namespace: namespace.Name,
-			Finalizers: []string{controllers.LogicalBackingFinalizer},
+			Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer},
 		},
 		Spec: newRemovablePhysicalContainerVolumeSpec(volumeName),
 	}
 	require.NoError(t, client.Create(ctx, volume))
-	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalBackingFinalizer)
+	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalPhysicalHoldFinalizer)
 	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 	containerID, createErr := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: namespace.Name + "-consumer", Image: "in-use-image",
@@ -243,12 +243,12 @@ func TestV2PhysicalContainerVolumeControllerBoundsNamespaceDeletionWhileInUse(t 
 	requireReadyCondition(t, abandoned.Status.Conditions, metav1.ConditionFalse,
 		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned)
 	released := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
-		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 	})
 	removalAttempts := containerOrchestrator.RemoveVolumeCallCount(volumeName)
 	require.Greater(t, removalAttempts, 1, "the controller must retry failed removal before abandoning it")
 
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, released))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, released))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, volume)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 	require.Equal(t, removalAttempts, containerOrchestrator.RemoveVolumeCallCount(volumeName),
@@ -299,11 +299,11 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 
 	volume := &apiv2.PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "delete-during-create-volume", Namespace: namespace.Name,
-			Finalizers: []string{controllers.LogicalBackingFinalizer}},
+			Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer}},
 		Spec: newRemovablePhysicalContainerVolumeSpec(volumeName),
 	}
 	require.NoError(t, client.Create(ctx, volume))
-	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalBackingFinalizer)
+	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalPhysicalHoldFinalizer)
 	waitCreateVolumeCallCount(t, ctx, volumeName, 1)
 	require.NoError(t, client.Delete(ctx, volume))
 
@@ -323,11 +323,11 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 
 	releaseCreate()
 	cleaned := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
-		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 	})
 	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved)
 	waitRuntimeVolumeMissing(t, ctx, volumeName)
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, cleaned))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))

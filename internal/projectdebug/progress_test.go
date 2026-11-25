@@ -1,0 +1,107 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package projectdebug
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/testutil"
+)
+
+// Verifies that bridge-owned progress survives controller and stale session writes, remains
+// separate from sibling sessions, and cannot reopen a completed bridge lifetime.
+func TestProjectDebugSessionProgressOwnership(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	apiClient, writer := startProjectDebugStatusServer(t, ctx)
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "progress-ownership"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
+			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
+		}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
+	require.NoError(t, apiClient.Create(ctx, project))
+	session := &apiv2.ProjectDebugSessionStatus{ID: "first", Phase: apiv2.ProjectDebugPhaseRunning}
+	_, registerErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
+	require.NoError(t, registerErr)
+	sibling := &apiv2.ProjectDebugSessionStatus{ID: "second", Phase: apiv2.ProjectDebugPhaseRunning}
+	_, siblingErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, sibling)
+	require.NoError(t, siblingErr)
+	progress := &apiv2.ProjectDebugSessionProgress{Phase: apiv2.ProjectDebugConnectionConnected,
+		StreamsConnected: true, InitializeRequested: true, AdapterInitialized: true, LaunchRequested: true}
+	_, progressErr := writer.updateProgress(ctx, project.NamespacedName(), project.UID, session.ID, progress)
+	require.NoError(t, progressErr)
+	stale, staleErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
+	require.NoError(t, staleErr)
+	require.Equal(t, progress, stale.GetProjectStatus().Debug.Sessions[0].Progress)
+	requireReadyCondition := func(resource apiv2.ProjectObject, ready metav1.ConditionStatus, reason string) {
+		t.Helper()
+		require.Equal(t, ready, resource.GetProjectStatus().Debug.Sessions[0].Conditions[0].Status)
+		require.Equal(t, reason, resource.GetProjectStatus().Debug.Sessions[0].Conditions[0].Reason)
+	}
+	requireReadyCondition(stale, metav1.ConditionTrue, "DAPInitialized")
+	require.Nil(t, stale.GetProjectStatus().Debug.Sessions[1].Progress)
+	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+	project.GetProjectStatus().Debug.Sessions[0].Progress = nil
+	project.GetProjectStatus().Phase = apiv2.ProjectPhaseReady
+	require.NoError(t, apiClient.Status().Update(ctx, project))
+	require.Equal(t, progress, project.GetProjectStatus().Debug.Sessions[0].Progress)
+	progress.Phase, progress.ClientTerminating = apiv2.ProjectDebugConnectionTerminating, true
+	terminating, terminationErr := writer.updateProgress(ctx, project.NamespacedName(), project.UID, session.ID, progress)
+	require.NoError(t, terminationErr)
+	requireReadyCondition(terminating, metav1.ConditionFalse, "SessionTerminating")
+	progress.Phase = apiv2.ProjectDebugConnectionDisconnected
+	progress.ClientDisconnected, progress.AdapterDisconnected = true, true
+	_, disconnectErr := writer.updateProgress(ctx, project.NamespacedName(), project.UID, session.ID, progress)
+	require.NoError(t, disconnectErr)
+	session.Phase, session.FinishedAt = apiv2.ProjectDebugPhaseExited, metav1.NowMicro()
+	session.Conditions = debugConditions("SessionClosed", "Session closed.", false, project.Generation)
+	completed, completionErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
+	require.NoError(t, completionErr)
+	require.Equal(t, progress, completed.GetProjectStatus().Debug.Sessions[0].Progress)
+	session.Phase, session.FinishedAt = apiv2.ProjectDebugPhaseRunning, metav1.MicroTime{}
+	stillCompleted, oldWriteErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
+	require.NoError(t, oldWriteErr)
+	require.Equal(t, apiv2.ProjectDebugPhaseExited, stillCompleted.GetProjectStatus().Debug.Sessions[0].Phase)
+	require.WithinDuration(t, completed.GetProjectStatus().Debug.Sessions[0].FinishedAt.Time,
+		stillCompleted.GetProjectStatus().Debug.Sessions[0].FinishedAt.Time, time.Microsecond)
+	require.Equal(t, progress, stillCompleted.GetProjectStatus().Debug.Sessions[0].Progress)
+	_, wrongUIDErr := writer.updateProgress(ctx, project.NamespacedName(), "wrong-uid", session.ID, progress)
+	require.True(t, apierrors.IsConflict(wrongUIDErr))
+}
+
+// Verifies that applyProjectDebugSessionProgress makes a session ready from either the adapter
+// initialized event or a successful launch response, and not from a launch request alone.
+func TestProjectDebugSessionReadyFromInitializedOrLaunchSuccess(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		progress apiv2.ProjectDebugSessionProgress
+		ready    metav1.ConditionStatus
+		reason   string
+	}{
+		{"launch-requested", apiv2.ProjectDebugSessionProgress{InitializeRequested: true, LaunchRequested: true},
+			metav1.ConditionFalse, "DAPInitializationPending"},
+		{"launch-succeeded", apiv2.ProjectDebugSessionProgress{InitializeRequested: true, LaunchRequested: true, LaunchSucceeded: true},
+			metav1.ConditionTrue, "LaunchSucceeded"},
+		{"adapter-initialized", apiv2.ProjectDebugSessionProgress{InitializeRequested: true, AdapterInitialized: true, LaunchSucceeded: true},
+			metav1.ConditionTrue, "DAPInitialized"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			progress := testCase.progress
+			progress.Phase = apiv2.ProjectDebugConnectionConnected
+			session := &apiv2.ProjectDebugSessionStatus{ID: "session", Phase: apiv2.ProjectDebugPhaseRunning, Progress: &progress}
+			applyProjectDebugSessionProgress(session, 1)
+			require.Equal(t, testCase.ready, session.Conditions[0].Status)
+			require.Equal(t, testCase.reason, session.Conditions[0].Reason)
+		})
+	}
+}

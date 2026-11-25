@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -75,6 +76,10 @@ func (state physicalProcessState) String() string {
 	}
 }
 
+type physicalProcessExitWatch struct {
+	cancel context.CancelFunc
+}
+
 type physicalProcessData struct {
 	resourceUID        types.UID
 	state              physicalProcessState
@@ -89,6 +94,7 @@ type physicalProcessData struct {
 	stdout             *logs.CaptureFile
 	stderr             *logs.CaptureFile
 	outputComplete     bool
+	exitWatch          *physicalProcessExitWatch
 }
 
 func (data *physicalProcessData) Clone() *physicalProcessData {
@@ -106,6 +112,7 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		stdout:             data.stdout,
 		stderr:             data.stderr,
 		outputComplete:     data.outputComplete,
+		exitWatch:          data.exitWatch,
 	}
 }
 
@@ -125,7 +132,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.cleanupUnconfirmed != other.cleanupUnconfirmed ||
 		data.stdout != other.stdout || data.stderr != other.stderr ||
 		data.outputComplete != other.outputComplete ||
-		!data.retryAfter.Equal(other.retryAfter)
+		!data.retryAfter.Equal(other.retryAfter) || data.exitWatch != other.exitWatch
 	if updated {
 		*data = *other.Clone()
 	}

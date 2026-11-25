@@ -4,7 +4,7 @@
 
 ## Responsibility and boundaries
 
-Follow the general flow of V1 `handleNewContainer`: determine reuse versus creation, then establish the appropriate backing. The V2 difference is that the backing is a **PhysicalContainer API resource**. Runtime creation, replacement, startup, stopping, and removal belong to physical controllers.
+Follow the general flow of V1 `handleNewContainer`: determine reuse versus creation, then establish the appropriate physical resource. The V2 difference is that the physical resource is a **PhysicalContainer API resource**. Runtime creation, replacement, startup, stopping, and removal belong to physical controllers.
 
 Lifecycle determination, runtime lookup, and physical-resource declaration happen in **one Pending reconciliation**, unless an actual error or dependency requires waiting. They are not separate states or transition-only reconciliation loops.
 
@@ -49,7 +49,7 @@ Look up the requested runtime name using the established inspection helper. Keep
 - A missing runtime proceeds to the mode decision below.
 - Do not add a separate logical runtime-health probe or a logical work queue.
 
-### 4. Decide the backing locally
+### 4. Decide the physical resource locally
 
 | Mode / observation | Decision |
 |---|---|
@@ -57,7 +57,7 @@ Look up the requested runtime name using the established inspection helper. Keep
 | Session, otherwise | Request a new runtime through a physical creation template. |
 | Persistent or existing, runtime found and stop requested | Declare a physical ID reference with `Stop = true`. Do not replace the runtime or acquire an image for a new container. |
 | Existing, runtime found | Declare a physical ID reference. |
-| Existing, runtime missing | Remain Pending and requeue; if stop was requested, finish stopped without creating a backing. |
+| Existing, runtime missing | Remain Pending and requeue; if stop was requested, finish stopped without creating a physical resource. |
 | Persistent, unmanaged runtime found | Reuse it through a physical ID reference. Do not claim workload cleanup ownership. |
 | Persistent, DCP-managed runtime found, matching lifecycle key, running | Reuse it through a physical ID reference. Preserve existing workload ownership. |
 | Persistent, DCP-managed runtime found but key changed or runtime is not running | Request a physical creation template with replacement enabled. The physical controller performs the replacement. |
@@ -97,7 +97,7 @@ API construction/create helpers may return resources and errors. They must not c
 
 ### 7. Hand off to observation
 
-Record the accepted child identities and the lifecycle key associated with that backing. Transition to Creating for runtime observation, or Stopping when the supplied logical snapshot requests stop, only after acquiring both expected children.
+Record the accepted child identities and the lifecycle key associated with that physical resource. Transition to Creating for runtime observation, or Stopping when the supplied logical snapshot requests stop, only after acquiring both expected children.
 
 This does **not** mean the public phase becomes Running merely because the API child exists. Subsequent child updates determine runtime readiness and completion. Do not immediately fetch a newer physical status or wait for a particular generation in this method.
 
@@ -109,7 +109,7 @@ Workload cleanup registration is not part of Pending preparation. Template/repla
 
 Deletion enumerates and requests deletion of **every** owned physical container, even if normal reconciliation failed because there were duplicates or no child UID was ever recorded. A recorded UID must not hide another owned child or prevent its cleanup.
 
-Observe physical cleanup through the existing finalizer protocol, settle any tracked creation ownership/lease work, and release logical holds. Apply the same owner-based enumeration to owned inline images after container cleanup. Finalize the logical resource once its owned backings and remaining housekeeping are gone.
+Observe physical cleanup through the existing finalizer protocol, settle any tracked creation ownership/lease work, and release logical holds. Apply the same owner-based enumeration to owned inline images after container cleanup. Finalize the logical resource once its owned physical resources and remaining housekeeping are gone.
 
 Deletion does not select a single child or apply the normal single-child cardinality restriction.
 
@@ -125,6 +125,6 @@ The handler owns its state-machine outcomes: continue, wait/requeue, fail, or ha
 
 ## Verification after plan approval
 
-Cover session creation, persistent creation and replacement, managed/unmanaged adoption, existing-mode absence, initial stop, ambiguous and `AlreadyExists` API creation, and stop/deletion arriving during lookup. Verify discovery of differently named owned children, terminal duplicate detection with or without an existing physical container, and deletion of all owned children without a previously recorded UID. Verify that cached image absence keeps the logical container in Pending even when its physical container exists, and startup logs remain available during container declaration retries. Successful preparation and backing declaration must not require artificial extra reconciliation passes, and adoption must never grant workload cleanup ownership.
+Cover session creation, persistent creation and replacement, managed/unmanaged adoption, existing-mode absence, initial stop, ambiguous and `AlreadyExists` API creation, and stop/deletion arriving during lookup. Verify discovery of differently named owned children, terminal duplicate detection with or without an existing physical container, and deletion of all owned children without a previously recorded UID. Verify that cached image absence keeps the logical container in Pending even when its physical container exists, and startup logs remain available during container declaration retries. Successful preparation and physical resource declaration must not require artificial extra reconciliation passes, and adoption must never grant workload cleanup ownership.
 
 **Approval is limited to this preparation flow and its directly required supporting changes.**

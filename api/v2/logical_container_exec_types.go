@@ -79,7 +79,7 @@ type LogicalContainerExecStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// PhysicalExecRef identifies the same-namespace backing PhysicalContainerExec.
+	// PhysicalExecRef identifies the same-namespace PhysicalContainerExec.
 	PhysicalExecRef string `json:"physicalExecRef,omitempty"`
 	// ContainerID is the runtime container identity selected by the physical execution.
 	ContainerID string `json:"containerID,omitempty"`
@@ -126,6 +126,13 @@ func (resource *LogicalContainerExec) GetResourceId() string {
 // GetLogSource describes output projected from the owned physical execution.
 func (resource *LogicalContainerExec) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
+}
+
+func (resource *LogicalContainerExec) GetLogStreams() LogStreams {
+	return LogStreams{
+		OutputSupported: true, Runtime: resource.Status.RuntimeLogs,
+		Complete: resource.Status.Phase == LogicalContainerExecPhaseExited || resource.Status.Phase == LogicalContainerExecPhaseFailed,
+	}
 }
 
 func (resource *LogicalContainerExec) Validate(context.Context) field.ErrorList {
@@ -178,6 +185,7 @@ func (list *LogicalContainerExecList) GetItems() []*LogicalContainerExec {
 func init() { SchemeBuilder.Register(&LogicalContainerExec{}, &LogicalContainerExecList{}) }
 
 var _ apiserver_resource.Object = (*LogicalContainerExec)(nil)
+var _ LogStreamingResource = (*LogicalContainerExec)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainerExec)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalContainerExecStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalContainerExecList)(nil)

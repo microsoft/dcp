@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-type backingStatusConflicts struct {
+type physicalResourceStatusConflicts struct {
 	ctrl_client.Client
 	imageBlocked                 atomic.Bool
 	containerBlocked             atomic.Bool
@@ -49,11 +50,11 @@ type backingStatusConflicts struct {
 	logicalFinalizerConflict     atomic.Bool
 }
 
-// Verifies that logical deletion completes from dependency, creation-retry, replacement-retry,
-// and ownership-conflict waits without creating new runtime work or retaining the startup lease.
-func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testing.T) {
+// Verifies that logical deletion completes from dependency and ownership-conflict waits
+// without creating new runtime work or retaining the startup lease.
+func TestV2LogicalContainerDeletesWhileWaitingForDependencies(t *testing.T) {
 	t.Parallel()
-	for _, dependency := range []string{"image", "volume", "create", "partial-create", "replacement", "tracked"} {
+	for _, dependency := range []string{"image", "volume", "tracked"} {
 		t.Run(dependency, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -70,41 +71,26 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 			switch dependency {
 			case "volume":
 				config.VolumeMounts = []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "missing", Target: "/data"}}
-			case "create":
-				containerOrchestrator.FailNextCreateContainer(runtimeName, containers.ErrRuntimeNotHealthy)
-				reason = apiv2.PhysicalContainerReasonCreateFailed
-			case "partial-create":
-				containerOrchestrator.FailNextCreateContainerAfterCreation(runtimeName, containers.ErrRuntimeNotHealthy)
-				reason = apiv2.PhysicalContainerReasonCreateFailed
-			case "replacement", "tracked":
-				key := "previous"
-				if dependency == "tracked" {
-					key = "desired"
-				}
+			case "tracked":
 				var runErr error
 				existingID, runErr = containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 					CreateContainerOptions: containers.CreateContainerOptions{
 						Name: runtimeName, Image: namespace.Name + "-image",
 						Labels: map[string]string{
-							"com.microsoft.developer.usvc-dev.lifecycle-key": key,
+							"com.microsoft.developer.usvc-dev.lifecycle-key": "desired",
 							"com.microsoft.developer.usvc-dev.build":         "test",
 						},
 					},
 				})
 				require.NoError(t, runErr)
 				removeRuntimeContainerOnCleanup(t, existingID)
-				if dependency == "replacement" {
-					containerOrchestrator.FailNextRemoveContainer(runtimeName, containers.ErrRuntimeNotHealthy)
-					reason = apiv2.PhysicalContainerReasonExistingContainerReplacementFailed
-				} else {
-					owner := &apiv2.PhysicalContainer{
-						ObjectMeta: metav1.ObjectMeta{Name: "runtime-owner", Namespace: namespace.Name},
-						Spec:       apiv2.PhysicalContainerSpec{ContainerID: existingID},
-					}
-					require.NoError(t, client.Create(ctx, owner))
-					waitPhysicalContainerPhase(t, ctx, owner.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
-					reason = apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked
+				owner := &apiv2.PhysicalContainer{
+					ObjectMeta: metav1.ObjectMeta{Name: "runtime-owner", Namespace: namespace.Name},
+					Spec:       apiv2.PhysicalContainerSpec{ContainerID: existingID},
 				}
+				require.NoError(t, client.Create(ctx, owner))
+				waitPhysicalContainerPhase(t, ctx, owner.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+				reason = apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked
 			}
 			logical := &apiv2.LogicalContainer{
 				ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: namespace.Name},
@@ -127,9 +113,6 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 			if existingID != "" {
 				_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{existingID}})
 				require.NoError(t, inspectErr)
-			}
-			if dependency == "partial-create" {
-				waitContainerMissing(t, ctx, runtimeName)
 			}
 			waitResourceLeaseReleased(t, ctx, logical)
 		})
@@ -168,7 +151,7 @@ func TestV2LogicalContainerDeletionCancelsPendingOwnedImage(t *testing.T) {
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(logical.Spec.ContainerName))
 }
 
-// Verifies that logical deletion immediately marks an in-flight physical backing for deletion,
+// Verifies that logical deletion immediately marks an in-flight physical resource for deletion,
 // then removes the confirmed runtime container without continuing startup.
 func TestV2LogicalContainerDeletionWaitsForInFlightCreation(t *testing.T) {
 	t.Parallel()
@@ -195,7 +178,7 @@ func TestV2LogicalContainerDeletionWaitsForInFlightCreation(t *testing.T) {
 	physical := waitObjectAssumesState(t, ctx, name, func(current *apiv2.PhysicalContainer) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.False(t, physical.Spec.Stop)
 	releaseCreate()
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, logical)
@@ -205,7 +188,7 @@ func TestV2LogicalContainerDeletionWaitsForInFlightCreation(t *testing.T) {
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(runtimeName))
 }
 
-type backingCreateResponseLoss struct {
+type physicalResourceCreateResponseLoss struct {
 	ctrl_client.Client
 	created  chan *apiv2.PhysicalContainer
 	observe  chan struct{}
@@ -224,8 +207,8 @@ type logicalObservationGate struct {
 }
 
 // Verifies owner-based discovery independently of child names, terminal duplicate detection,
-// and deletion of every owned backing even when the logical controller has never recorded a UID.
-func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
+// and deletion of every owned physical resource even when the logical controller has never recorded a UID.
+func TestV2LogicalContainerDiscoversAndDeletesOwnedPhysicalResources(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name                string
@@ -295,7 +278,7 @@ func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
 					image := &apiv2.PhysicalContainerImage{
 						ObjectMeta: metadata, Spec: apiv2.PhysicalContainerImageSpec{Image: logical.Spec.Container.Image.DeepCopy()},
 					}
-					controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+					controllers.InitializePhysicalResourceFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
 					require.NoError(t, server.Client.Create(ctx, image))
 					waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
 						return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
@@ -304,7 +287,7 @@ func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
 					physical := &apiv2.PhysicalContainer{
 						ObjectMeta: metadata, Spec: apiv2.PhysicalContainerSpec{ContainerID: runtimeID},
 					}
-					controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
+					controllers.InitializePhysicalResourceFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
 					require.NoError(t, server.Client.Create(ctx, physical))
 					waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
 						ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
@@ -323,7 +306,7 @@ func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
 						ContainerName: logical.Spec.ContainerName, ImageRef: "owned-child-0",
 					}},
 				}
-				controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
+				controllers.InitializePhysicalResourceFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
 				require.NoError(t, server.Client.Create(ctx, physical))
 				waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning, nil
@@ -434,7 +417,7 @@ func (client *logicalObservationGate) Create(ctx context.Context, obj ctrl_clien
 	return client.Client.Create(ctx, obj, options...)
 }
 
-// Verifies that Pending discovers preexisting backings by ownership and waits for its owned image,
+// Verifies that Pending discovers preexisting physical resources by ownership and waits for its owned image,
 // including after AlreadyExists confirmation, and exposes startup logs while container declaration is retrying.
 func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 	t.Parallel()
@@ -450,7 +433,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			defer cancel()
+			t.Cleanup(cancel)
 			observe := make(chan struct{})
 			var observeOnce sync.Once
 			allowObservation := func() { observeOnce.Do(func() { close(observe) }) }
@@ -468,8 +451,8 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 					},
 				})
 			require.NoError(t, startErr)
-			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "creating-image"}}
-			require.NoError(t, server.Client.Create(ctx, namespace))
+			// An inactive namespace also reports Pending/Starting, which must not satisfy the wait below.
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "creating-image")
 			logical := &apiv2.LogicalContainer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "logical", Namespace: namespace.Name,
@@ -496,7 +479,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 					},
 					Spec: apiv2.PhysicalContainerImageSpec{Image: logical.Spec.Container.Image.DeepCopy()},
 				}
-				controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+				controllers.InitializePhysicalResourceFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
 				require.NoError(t, server.Client.Create(ctx, image))
 				ownedImageUID = image.UID
 				waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
@@ -513,7 +496,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 				if testCase.confirmTemplate {
 					physical.Name = "logical-" + string(logical.UID)
 				}
-				controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
+				controllers.InitializePhysicalResourceFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
 				require.NoError(t, server.Client.Create(ctx, physical))
 				ownedContainerUID = physical.UID
 				waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
@@ -525,8 +508,10 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 			var expectedReason apiv2.ConditionReason = apiv2.LogicalContainerReasonStarting
 			waiting := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				// The retry case must be observed at the rejected container declaration, not an earlier preparation step.
+				retrying := testCase.existingContainer || (ready != nil && strings.Contains(ready.Message, "injected physical container creation failure"))
 				return current.Status.Phase == apiv2.LogicalContainerPhaseRunning ||
-					(current.Status.Phase == expectedPhase && ready != nil && ready.Reason == string(expectedReason)), nil
+					(current.Status.Phase == expectedPhase && ready != nil && ready.Reason == string(expectedReason) && retrying), nil
 			})
 			require.Equal(t, expectedPhase, waiting.Status.Phase)
 			requireReadyCondition(t, waiting.Status.Conditions, metav1.ConditionFalse, expectedReason)
@@ -567,9 +552,9 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalContainer recovers from backing lookup failures and completes requested Stop
-// or deletion without replacing its backing or creating another runtime container.
-func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
+// Verifies that LogicalContainer recovers from physical resource lookup failures and completes requested Stop
+// or deletion without replacing its physical resource or creating another runtime container.
+func TestV2LogicalContainerRetriesPhysicalLookup(t *testing.T) {
 	t.Parallel()
 	for _, action := range []string{"running", "running-image", "stopping", "deleting"} {
 		t.Run(action, func(t *testing.T) {
@@ -641,12 +626,12 @@ func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
 	}
 }
 
-// Verifies that a LogicalContainer first observed during deletion confirms generated backing names,
+// Verifies that a LogicalContainer first observed during deletion confirms generated physical resource names,
 // including children absent from cached queries, without initializing lifecycle work or acquiring a lease.
 func TestV2LogicalContainerDeletesWithoutInitializingLifecycle(t *testing.T) {
 	t.Parallel()
-	for _, withBackings := range []bool{false, true} {
-		t.Run(fmt.Sprintf("backings-%t", withBackings), func(t *testing.T) {
+	for _, withPhysicalResources := range []bool{false, true} {
+		t.Run(fmt.Sprintf("physical-resources-%t", withPhysicalResources), func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
@@ -681,13 +666,13 @@ func TestV2LogicalContainerDeletesWithoutInitializingLifecycle(t *testing.T) {
 				},
 			}
 			require.NoError(t, server.Client.Create(ctx, logical))
-			if withBackings {
+			if withPhysicalResources {
 				metadata := metav1.ObjectMeta{Name: "logical-" + string(logical.UID), Namespace: namespace.Name,
 					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(logical, apiv2.GroupVersion.WithKind("LogicalContainer"))}}
 				physical := &apiv2.PhysicalContainer{ObjectMeta: metadata, Spec: apiv2.PhysicalContainerSpec{ContainerID: "uninitialized-container-id"}}
 				image := &apiv2.PhysicalContainerImage{ObjectMeta: metadata, Spec: apiv2.PhysicalContainerImageSpec{ImageID: "uninitialized-image-id"}}
-				controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
-				controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+				controllers.InitializePhysicalResourceFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
+				controllers.InitializePhysicalResourceFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
 				require.NoError(t, server.Client.Create(ctx, physical))
 				require.NoError(t, server.Client.Create(ctx, image))
 				gated.containerHidden.Store(true)
@@ -713,7 +698,7 @@ func TestV2LogicalContainerDeletesWithoutInitializingLifecycle(t *testing.T) {
 	}
 }
 
-func (client *backingCreateResponseLoss) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+func (client *physicalResourceCreateResponseLoss) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
 	if _, physical := obj.(*apiv2.PhysicalContainer); physical && client.creating.Load() {
 		select {
 		case <-client.observe:
@@ -724,7 +709,7 @@ func (client *backingCreateResponseLoss) Get(ctx context.Context, key ctrl_clien
 	return client.Client.Get(ctx, key, obj, options...)
 }
 
-func (client *backingCreateResponseLoss) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+func (client *physicalResourceCreateResponseLoss) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	_, physicalCreate := obj.(*apiv2.PhysicalContainer)
 	if physicalCreate {
 		client.creating.Store(true)
@@ -744,7 +729,7 @@ func (client *backingCreateResponseLoss) Create(ctx context.Context, obj ctrl_cl
 		}
 		select {
 		case <-client.observe:
-			return fmt.Errorf("injected lost response after committed backing create")
+			return fmt.Errorf("injected lost response after committed physical resource create")
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -754,7 +739,7 @@ func (client *backingCreateResponseLoss) Create(ctx context.Context, obj ctrl_cl
 
 // Verifies that deletion before the first physical reconciliation is protected by atomically
 // installed finalizers, and namespace cleanup settles a lost create response without runtime creation or ownership.
-func TestV2LogicalContainerDeletesUnobservedBackingAfterNamespaceTermination(t *testing.T) {
+func TestV2LogicalContainerDeletesUnobservedPhysicalAfterNamespaceTermination(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -768,11 +753,11 @@ func TestV2LogicalContainerDeletesUnobservedBackingAfterNamespaceTermination(t *
 		t.Name(), t.TempDir(), TestEnvironmentOptions{
 			WorkloadID: "unobserved-workload",
 			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				return &backingCreateResponseLoss{Client: client, created: created, observe: observe}
+				return &physicalResourceCreateResponseLoss{Client: client, created: created, observe: observe}
 			},
 		})
 	require.NoError(t, startErr)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "unobserved-backing"}}
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "unobserved-physical"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))
 	logical := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: namespace.Name},
@@ -789,7 +774,7 @@ func TestV2LogicalContainerDeletesUnobservedBackingAfterNamespaceTermination(t *
 		t.Fatal(ctx.Err())
 	}
 	require.Len(t, physical.Finalizers, 2)
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Empty(t, physical.Status.Conditions)
 	require.NoError(t, server.Client.Delete(ctx, physical))
 	require.NoError(t, server.Client.Delete(ctx, namespace))
@@ -806,7 +791,7 @@ func TestV2LogicalContainerDeletesUnobservedBackingAfterNamespaceTermination(t *
 	require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
-func (client *backingStatusConflicts) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
+func (client *physicalResourceStatusConflicts) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
 	if logical, isLogical := obj.(*apiv2.LogicalContainer); isLogical &&
 		!slices.Contains(logical.Finalizers, apiv2.GroupVersion.Group+"/logicalcontainer-reconciler") &&
 		client.logicalFinalizerConflict.CompareAndSwap(false, true) {
@@ -822,7 +807,7 @@ func (client *backingStatusConflicts) Patch(ctx context.Context, obj ctrl_client
 		}
 	}
 	loseResponse := false
-	if !slices.Contains(obj.GetFinalizers(), controllers.LogicalBackingFinalizer) {
+	if !slices.Contains(obj.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer) {
 		switch obj.(type) {
 		case *apiv2.PhysicalContainer:
 			loseResponse = client.containerReleaseResponseLost.CompareAndSwap(false, true)
@@ -835,18 +820,18 @@ func (client *backingStatusConflicts) Patch(ctx context.Context, obj ctrl_client
 		return patchErr
 	}
 	if loseResponse {
-		return fmt.Errorf("injected lost response after committed backing release")
+		return fmt.Errorf("injected lost response after committed physical resource release")
 	}
 	return nil
 }
 
-// Verifies that removing either owned backing's logical hold reports terminal failure,
-// including after backing deletion and a later metadata wake, without recreating the backing
+// Verifies that removing either owned physical resource's logical hold reports terminal failure,
+// including after physical resource deletion and a later metadata wake, without recreating the physical resource
 // or falsely completing its last observed log source.
-func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
+func TestV2LogicalContainerRejectsUnauthorizedPhysicalRelease(t *testing.T) {
 	t.Parallel()
-	for _, backingKind := range []string{"container", "image"} {
-		t.Run(backingKind, func(t *testing.T) {
+	for _, physicalResourceKind := range []string{"container", "image"} {
+		t.Run(physicalResourceKind, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
@@ -879,25 +864,25 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 			_, historyErr := io.ReadFull(follower, history)
 			require.NoError(t, historyErr)
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)}
-			var backing ctrl_client.Object = &apiv2.PhysicalContainer{}
+			var physicalResource ctrl_client.Object = &apiv2.PhysicalContainer{}
 			reason := apiv2.LogicalContainerReasonMissing
-			if backingKind == "image" {
-				backing = &apiv2.PhysicalContainerImage{}
+			if physicalResourceKind == "image" {
+				physicalResource = &apiv2.PhysicalContainerImage{}
 				reason = apiv2.LogicalContainerReasonMissing
 			}
-			require.NoError(t, server.Client.Get(ctx, name, backing))
-			switch backing.(type) {
+			require.NoError(t, server.Client.Get(ctx, name, physicalResource))
+			switch physicalResource.(type) {
 			case *apiv2.PhysicalContainer:
 				require.NoError(t, retryOnConflictEx(ctx, server.Client, name, func(updateCtx context.Context, current *apiv2.PhysicalContainer) error {
 					current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
-						return finalizer == controllers.LogicalBackingFinalizer
+						return finalizer == controllers.LogicalPhysicalHoldFinalizer
 					})
 					return server.Client.Update(updateCtx, current)
 				}))
 			case *apiv2.PhysicalContainerImage:
 				require.NoError(t, retryOnConflictEx(ctx, server.Client, name, func(updateCtx context.Context, current *apiv2.PhysicalContainerImage) error {
 					current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
-						return finalizer == controllers.LogicalBackingFinalizer
+						return finalizer == controllers.LogicalPhysicalHoldFinalizer
 					})
 					return server.Client.Update(updateCtx, current)
 				}))
@@ -914,12 +899,12 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 			_, continuedErr := io.ReadFull(follower, continued)
 			require.NoError(t, continuedErr)
 			require.Equal(t, "after-release\n", string(continued))
-			require.NoError(t, server.Client.Delete(ctx, backing))
-			switch currentBacking := backing.(type) {
+			require.NoError(t, server.Client.Delete(ctx, physicalResource))
+			switch currentPhysical := physicalResource.(type) {
 			case *apiv2.PhysicalContainer:
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, currentBacking)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, currentPhysical)
 			case *apiv2.PhysicalContainerImage:
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, currentBacking)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, currentPhysical)
 			}
 			require.NoError(t, retryOnConflictEx(ctx, server.Client, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 				current.Annotations = map[string]string{"test.dcp.microsoft.com/wake": "after-deletion"}
@@ -928,7 +913,7 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 			require.NoError(t, server.Client.Get(ctx, unknown.NamespacedName(), unknown))
 			require.Equal(t, apiv2.LogicalContainerPhaseFailed, unknown.Status.Phase)
 			require.Equal(t, string(reason), apimeta.FindStatusCondition(unknown.Status.Conditions, string(apiv2.ConditionReady)).Reason)
-			require.True(t, apierrors.IsNotFound(server.Client.Get(ctx, name, backing)))
+			require.True(t, apierrors.IsNotFound(server.Client.Get(ctx, name, physicalResource)))
 			require.Equal(t, 1, orchestrator.PullImageCallCount("held-image"))
 			require.NoError(t, server.Client.Delete(ctx, logical))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
@@ -939,16 +924,16 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 	}
 }
 
-func (client *backingStatusConflicts) Status() ctrl_client.SubResourceWriter {
-	return &backingStatusWriter{SubResourceWriter: client.Client.Status(), client: client}
+func (client *physicalResourceStatusConflicts) Status() ctrl_client.SubResourceWriter {
+	return &physicalResourceStatusWriter{SubResourceWriter: client.Client.Status(), client: client}
 }
 
-type backingStatusWriter struct {
+type physicalResourceStatusWriter struct {
 	ctrl_client.SubResourceWriter
-	client *backingStatusConflicts
+	client *physicalResourceStatusConflicts
 }
 
-func (writer *backingStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
+func (writer *physicalResourceStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	block := false
 	var conflictSignal chan struct{}
 	var conflictOnce *sync.Once
@@ -988,17 +973,17 @@ func (writer *backingStatusWriter) Patch(ctx context.Context, obj ctrl_client.Ob
 
 // Verifies that physical cleanup retains its final outcome through status conflicts,
 // and logical deletion observes that outcome before settling ownership and releasing its hold.
-func TestV2LogicalContainerBackingsWaitForDurableStatusBeforeDeletion(t *testing.T) {
+func TestV2LogicalContainerPhysicalResourcesWaitForDurableStatusBeforeDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	var conflicts *backingStatusConflicts
+	var conflicts *physicalResourceStatusConflicts
 	server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
 		NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
 		t.Name(), t.TempDir(), TestEnvironmentOptions{
-			WorkloadID: commonapi.WorkloadID("backing-workload"),
+			WorkloadID: commonapi.WorkloadID("physical-workload"),
 			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				conflicts = &backingStatusConflicts{
+				conflicts = &physicalResourceStatusConflicts{
 					Client: client, imageConflict: make(chan struct{}), containerConflict: make(chan struct{}),
 				}
 				conflicts.imageBlocked.Store(true)
@@ -1007,7 +992,7 @@ func TestV2LogicalContainerBackingsWaitForDurableStatusBeforeDeletion(t *testing
 			},
 		})
 	require.NoError(t, startErr)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "held-physical-backings"}}
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "held-physical-resources"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))
 	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
 		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
@@ -1037,8 +1022,8 @@ func TestV2LogicalContainerBackingsWaitForDurableStatusBeforeDeletion(t *testing
 	})
 	image := &apiv2.PhysicalContainerImage{}
 	require.NoError(t, server.Client.Get(ctx, name, image))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
-	require.Contains(t, image.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
+	require.Contains(t, image.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Len(t, physical.Finalizers, 2)
 	require.Len(t, image.Finalizers, 2)
 	const independentFinalizer = "test.dcp.microsoft.com/independent-owner"
@@ -1050,7 +1035,7 @@ func TestV2LogicalContainerBackingsWaitForDurableStatusBeforeDeletion(t *testing
 	require.NoError(t, server.Client.Delete(ctx, physical))
 	require.NoError(t, server.Client.Delete(ctx, logical))
 	require.NoError(t, server.Client.Get(ctx, name, physical))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainer-reconciler")
 	require.NotEqual(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
 	orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
@@ -1061,8 +1046,8 @@ func TestV2LogicalContainerBackingsWaitForDurableStatusBeforeDeletion(t *testing
 	remainingImage := waitObjectAssumesStateEx(t, ctx, server.Client, name, func(current *apiv2.PhysicalContainerImage) (bool, error) {
 		return len(current.Finalizers) == 1 && current.Finalizers[0] == independentFinalizer, nil
 	})
-	require.NotContains(t, remainingImage.Finalizers, controllers.LogicalBackingFinalizer)
-	records, recordsErr := environment.StateStore.ListPersistentContainersByWorkloadID(ctx, "backing-workload")
+	require.NotContains(t, remainingImage.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
+	records, recordsErr := environment.StateStore.ListPersistentContainersByWorkloadID(ctx, "physical-workload")
 	require.NoError(t, recordsErr)
 	require.Len(t, records, 1)
 	require.Equal(t, "held-runtime-container", records[0].ContainerName)

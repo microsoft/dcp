@@ -6,10 +6,14 @@
 package controllers
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"path"
 	std_slices "slices"
 	"strconv"
 	"strings"
@@ -33,6 +37,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -66,6 +71,7 @@ var (
 		physicalContainerStateCopyFiles:              handlePhysicalContainerOperationInProgress,
 		physicalContainerStateFilesCopied:            handlePhysicalContainerFilesCreated,
 		physicalContainerStateFileCopyFailed:         handlePhysicalContainerOperationFailed,
+		physicalContainerStateAwaitingStart:          handlePhysicalContainerAwaitingStart,
 		physicalContainerStateStart:                  handlePhysicalContainerOperationInProgress,
 		physicalContainerStateStarted:                handlePhysicalContainerStarting,
 		physicalContainerStateStartFailed:            handlePhysicalContainerOperationFailed,
@@ -290,11 +296,15 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 	if owner := metav1.GetControllerOf(&container); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
+		owner.APIVersion == apiv2.GroupVersion.String() && (owner.Kind == "LogicalContainer" || owner.Kind == "ProjectContainer") && owner.UID != "" {
 		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		ownerStream := logicalOwner.GetResourceId()
+		if owner.Kind == "ProjectContainer" {
+			ownerStream = (&apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}).GetResourceId()
+		}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, ownerStream)
 		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical container system log stream")
+			log.Error(forwardErr, "Failed to attach owner system log stream")
 		} else {
 			log = forwardedLog
 		}
@@ -348,6 +358,9 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	}
 	initializer := getStateInitializer(physicalContainerDataInitializers, data.state, log)
 	change := initializer(ctx, r, container, data.state, data, log)
+	if !data.workInProgress && (container.Spec.Stop || physicalContainerArchiveCleanupRequired(data.state)) {
+		removeContainerCopySources(ctx, container.Spec.Container, log)
+	}
 	stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
 	dataChange, delay, valid := data.applyTo(container)
@@ -697,8 +710,12 @@ func handlePhysicalContainerCreated(
 		data.state = physicalContainerStateStopping
 		return additionalReconciliationNeeded
 	}
-	if len(container.Spec.Container.CreateFiles) > 0 {
+	if len(container.Spec.Container.CreateFiles) > 0 || len(container.Spec.Container.CopyFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, data, log)
+	}
+	if !container.Spec.ShouldStart() {
+		data.state = physicalContainerStateAwaitingStart
+		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
 	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
 }
@@ -727,7 +744,52 @@ func handlePhysicalContainerFilesCreated(
 		data.state = physicalContainerStateStopping
 		return additionalReconciliationNeeded
 	}
+	if !container.Spec.ShouldStart() {
+		data.state = physicalContainerStateAwaitingStart
+		return additionalReconciliationNeeded
+	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
+}
+
+// Waits for a prepared container whose start is deferred, adopting a runtime start performed by another component.
+func handlePhysicalContainerAwaitingStart(
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
+	_ physicalContainerState,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	if data.containerID == "" {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
+	reconciler.ensurePhysicalContainerWatch(container, log)
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+		return additionalReconciliationNeeded
+	}
+	if container.Spec.ShouldStart() {
+		return reconciler.schedulePhysicalContainerStart(container, data, log)
+	}
+
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		// Remain awaiting start so that a later start request is still honored.
+		log.Error(inspectErr, "Failed to inspect runtime container awaiting start", "ContainerID", data.containerID)
+		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
+		return noChange
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	if data.state == physicalContainerStateNotStarted {
+		data.state = physicalContainerStateAwaitingStart
+		return change
+	}
+	return change | additionalReconciliationNeeded
 }
 
 func handlePhysicalContainerOperationFailed(
@@ -898,7 +960,7 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 		return false, "", "", fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message)
 	}
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
-		!hasFinalizer(&image, LogicalBackingFinalizer) {
+		!hasFinalizer(&image, LogicalPhysicalHoldFinalizer) {
 		return false, "", fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), nil
 	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.ImageID == "" {
@@ -1069,6 +1131,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 		Networks:     networks,
 		Env:          containerConfig.Env,
 		Labels:       physicalContainerCreationLabels(containerSnapshot, log),
+		OpenStdin:    containerConfig.OpenStdin,
 	}
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
 		r.createPhysicalContainer(operationCtx, containerSnapshot, stateKey, dataSnapshot, createOptions, log)
@@ -1136,6 +1199,10 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
 		r.runPhysicalContainerCleanupMonitor(container, containerID, log)
+		if !container.Spec.ShouldStart() {
+			// Another component may start the container, so the retained lifecycle monitor must cover it from creation.
+			data.retainedMonitorStarted = r.runRetainedPhysicalContainerLifecycleMonitor(container, containerID, log)
+		}
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
@@ -1157,28 +1224,28 @@ func (r *PhysicalContainerReconciler) runPhysicalContainerCleanupMonitor(contain
 	dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
 }
 
-// Starts a stop-only monitor for a retained runtime container after it has started.
+// Starts a stop-only monitor for a retained runtime container and reports whether the monitor was launched.
 // Failures are logged but not surfaced, because the monitor is a best-effort reliability enhancement.
 func (r *PhysicalContainerReconciler) runRetainedPhysicalContainerLifecycleMonitor(
 	container *apiv2.PhysicalContainer,
 	containerID string,
 	log logr.Logger,
-) {
+) bool {
 	containerConfig := container.Spec.Container
 	if containerConfig == nil || !containerConfig.RetainRuntimeContainer || containerID == "" {
-		return
+		return false
 	}
 	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(containerConfig.MonitorPID, containerConfig.MonitorTimestamp)
 	if monitorErr != nil {
 		log.Error(monitorErr, "Could not start retained PhysicalContainer lifecycle monitor")
-		return
+		return false
 	}
 	if !found {
-		return
+		return false
 	}
 	if r.processExecutor == nil {
 		log.Error(errors.New("process executor is not configured"), "Could not start retained PhysicalContainer lifecycle monitor")
-		return
+		return false
 	}
 	dcpproc.RunContainerWatcherForMonitorWithOptions(
 		r.processExecutor,
@@ -1187,6 +1254,7 @@ func (r *PhysicalContainerReconciler) runRetainedPhysicalContainerLifecycleMonit
 		dcpproc.ContainerWatcherOptions{StopOnly: true},
 		log,
 	)
+	return true
 }
 
 func (r *PhysicalContainerReconciler) removePhysicalContainerForReplacement(ctx context.Context, containerName string, log logr.Logger) error {
@@ -1254,6 +1322,10 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 	fileModTime time.Time,
 	log logr.Logger,
 ) {
+	defer func() {
+		removeContainerCopySources(ctx, container.Spec.Container, log)
+		r.queuePhysicalContainerDataResult(container, stateKey, data)
+	}()
 	for _, createFileRequest := range container.Spec.Container.CreateFiles {
 		umask := osutil.DefaultUmaskBitmask
 		if createFileRequest.Umask != nil {
@@ -1276,16 +1348,49 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 
 			data.state = physicalContainerStateFileCopyFailed
 			data.failureMessage = fmt.Sprintf("Failed to copy files to physical container: %v", copyErr)
-			r.queuePhysicalContainerDataResult(container, stateKey, data)
 			return
 		}
-
 		log.V(1).Info("Files copied to the physical container", "ContainerID", data.containerID, "Destination", createFileRequest.Destination)
+	}
+	for _, copyContext := range container.Spec.Container.CopyFiles {
+		destination := copyContext.Destination
+		if destination == "" {
+			destination = "/"
+		}
+		var archive io.ReadCloser
+		var openErr error
+		if copyContext.Directory != "" {
+			archive = usvc_io.OpenDirectoryTar(ctx, copyContext.Directory, strings.TrimPrefix(path.Clean(destination), "/"), 0, 0, copyContext.ExecutableFiles)
+			destination = "/"
+		} else if copyContext.Source != "" {
+			archive, openErr = usvc_io.OpenSHA256VerifiedFile(ctx, copyContext.Source, copyContext.SHA256)
+		} else {
+			var contents []byte
+			contents, openErr = base64.StdEncoding.DecodeString(copyContext.RawContents)
+			if openErr == nil {
+				archive = io.NopCloser(bytes.NewReader(contents))
+			}
+		}
+		if openErr != nil {
+			data.state = physicalContainerStateFileCopyFailed
+			data.failureMessage = fmt.Sprintf("Failed to open container copy archive: %v", openErr)
+			log.Error(openErr, "Failed to open container copy archive")
+			return
+		}
+		copyErr := r.orchestrator.CopyFiles(ctx, containers.CopyFilesOptions{
+			Container: data.containerID, Destination: destination, Archive: archive,
+		})
+		closeErr := archive.Close()
+		if operationErr := errors.Join(copyErr, closeErr); operationErr != nil {
+			data.state = physicalContainerStateFileCopyFailed
+			data.failureMessage = fmt.Sprintf("Failed to copy container archive: %v", operationErr)
+			log.Error(operationErr, "Failed to copy container archive")
+			return
+		}
 	}
 
 	data.state = physicalContainerStateFilesCopied
 	data.failureMessage = ""
-	r.queuePhysicalContainerDataResult(container, stateKey, data)
 }
 
 func (r *PhysicalContainerReconciler) schedulePhysicalContainerStart(
@@ -1339,7 +1444,9 @@ func (r *PhysicalContainerReconciler) startPhysicalContainer(
 
 		data.state = physicalContainerStateStarted
 		data.failureMessage = ""
-		r.runRetainedPhysicalContainerLifecycleMonitor(container, data.containerID, log)
+		if !data.retainedMonitorStarted {
+			data.retainedMonitorStarted = r.runRetainedPhysicalContainerLifecycleMonitor(container, data.containerID, log)
+		}
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
@@ -1534,6 +1641,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 	log logr.Logger,
 ) (change objectChange, delay AdditionalReconciliationDelay) {
 	delay = StandardDelay
+	removeContainerCopySources(ctx, container.Spec.Container, log)
 	if data == nil {
 		defer logger.ReleaseResourceLog(container.GetResourceId())
 		return deleteFinalizer(container, physicalContainerFinalizer, log), delay
@@ -1724,6 +1832,11 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 	data.state = physicalContainerRuntimeState(inspectedContainer.Status)
 	if data.state == physicalContainerStateUnknown {
 		data.failureMessage = fmt.Sprintf("Runtime container returned unrecognized status %q.", inspectedContainer.Status)
+	}
+
+	if data.state != physicalContainerStateRunning && data.state != physicalContainerStatePaused {
+		data.portMappingFailureMessage = ""
+		return change | setPhysicalContainerPortMappings(container, nil)
 	}
 
 	portMappings, portMappingErr := physicalContainerPortMappingsFromInspected(inspectedContainer.Ports)

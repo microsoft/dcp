@@ -246,7 +246,7 @@ func TestV2ProcessLogFollowersWaitForOutputDrain(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 }
 
-type processBackingDeletionConflictReader struct {
+type processPhysicalDeletionConflictReader struct {
 	ctrl_client.Reader
 	client      ctrl_client.Client
 	logicalName types.NamespacedName
@@ -254,7 +254,7 @@ type processBackingDeletionConflictReader struct {
 	injected    atomic.Bool
 }
 
-func (reader *processBackingDeletionConflictReader) Get(
+func (reader *processPhysicalDeletionConflictReader) Get(
 	ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption,
 ) error {
 	getErr := reader.Reader.Get(ctx, key, obj, options...)
@@ -268,7 +268,7 @@ func (reader *processBackingDeletionConflictReader) Get(
 		if current.Annotations == nil {
 			current.Annotations = make(map[string]string)
 		}
-		current.Annotations["test.dcp.microsoft.com/backing-deletion-conflict"] = "injected"
+		current.Annotations["test.dcp.microsoft.com/physical-deletion-conflict"] = "injected"
 		return reader.client.Patch(updateCtx, current, patch)
 	})
 	if updateErr != nil {
@@ -278,9 +278,9 @@ func (reader *processBackingDeletionConflictReader) Get(
 	return getErr
 }
 
-// Verifies that LogicalProcess log followers finish when the backing PhysicalProcess disappears,
+// Verifies that LogicalProcess log followers finish when the PhysicalProcess disappears,
 // and completion remains projected when a real API resource-version conflict rejects the first status write.
-func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T) {
+func TestV2ProcessLogicalOnlyFollowerCompletesAfterPhysicalDeletion(t *testing.T) {
 	t.Parallel()
 	for _, withConflict := range []bool{false, true} {
 		name := "normal"
@@ -293,12 +293,12 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			defer cancel()
 			apiClient, logsClient, executor := client, restClient, testProcessExecutor
 			namespaceName := "v2-process-logical-only-" + name
-			var conflictReader *processBackingDeletionConflictReader
+			var conflictReader *processPhysicalDeletionConflictReader
 			if withConflict {
 				serverInfo, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 					LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 					TestEnvironmentOptions{DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
-						conflictReader = &processBackingDeletionConflictReader{Reader: reader,
+						conflictReader = &processPhysicalDeletionConflictReader{Reader: reader,
 							logicalName: types.NamespacedName{Namespace: namespaceName, Name: "process"}}
 						return conflictReader
 					}})
@@ -340,7 +340,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			if conflictReader != nil {
 				conflictReader.armed.Store(true)
 			}
-			forceRemoveLogicalProcessBacking(t, ctx, apiClient, physical)
+			forceRemoveLogicalProcessPhysical(t, ctx, apiClient, physical)
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
 			completed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 				return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete &&
@@ -365,18 +365,18 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 	}
 }
 
-// Verifies that LogicalProcess preserves a captured exit outcome after backing deletion while
+// Verifies that LogicalProcess preserves a captured exit outcome after physical resource deletion while
 // publishing unavailable logs, including when a real API conflict rejects the first status update.
-func TestV2ProcessTerminalOutcomeSurvivesBackingDeletion(t *testing.T) {
+func TestV2ProcessTerminalOutcomeSurvivesPhysicalDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	logicalName := types.NamespacedName{Namespace: "v2-terminal-process-backing-loss", Name: "process"}
-	var conflictReader *processBackingDeletionConflictReader
+	logicalName := types.NamespacedName{Namespace: "v2-terminal-process-physical-loss", Name: "process"}
+	var conflictReader *processPhysicalDeletionConflictReader
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
-			conflictReader = &processBackingDeletionConflictReader{Reader: reader, logicalName: logicalName}
+			conflictReader = &processPhysicalDeletionConflictReader{Reader: reader, logicalName: logicalName}
 			return conflictReader
 		}})
 	require.NoError(t, startupErr)
@@ -403,7 +403,7 @@ func TestV2ProcessTerminalOutcomeSurvivesBackingDeletion(t *testing.T) {
 	require.NoError(t, server.Client.Get(ctx,
 		types.NamespacedName{Name: exited.Status.PhysicalProcessRef, Namespace: logicalName.Namespace}, physical))
 	conflictReader.armed.Store(true)
-	forceRemoveLogicalProcessBacking(t, ctx, server.Client, physical)
+	forceRemoveLogicalProcessPhysical(t, ctx, server.Client, physical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 	completed := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil

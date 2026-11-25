@@ -71,11 +71,11 @@ type LogicalContainerPhase string
 const (
 	// LogicalContainerReasonStarting qualifies Pending while prerequisites and startup are in progress.
 	LogicalContainerReasonStarting ConditionReason = "Starting"
-	// LogicalContainerReasonRunning indicates that the backing container is running.
+	// LogicalContainerReasonRunning indicates that the physical container is running.
 	LogicalContainerReasonRunning ConditionReason = "Running"
-	// LogicalContainerReasonPaused indicates that the backing container is paused.
+	// LogicalContainerReasonPaused indicates that the physical container is paused.
 	LogicalContainerReasonPaused ConditionReason = "Paused"
-	// LogicalContainerReasonCompleted indicates that the backing container exited on its own.
+	// LogicalContainerReasonCompleted indicates that the physical container exited on its own.
 	LogicalContainerReasonCompleted ConditionReason = "Completed"
 	// LogicalContainerReasonStopping indicates that container termination has been requested.
 	LogicalContainerReasonStopping ConditionReason = "Stopping"
@@ -83,7 +83,7 @@ const (
 	LogicalContainerReasonStopped ConditionReason = "Stopped"
 	// LogicalContainerReasonFailedToStart indicates that startup could not complete.
 	LogicalContainerReasonFailedToStart ConditionReason = "FailedToStart"
-	// LogicalContainerReasonMissing indicates that a previously running backing is unavailable or no longer owned.
+	// LogicalContainerReasonMissing indicates that a previously running physical resource is unavailable or no longer owned.
 	LogicalContainerReasonMissing ConditionReason = "Missing"
 	// LogicalContainerReasonLookupFailed indicates that current state cannot be confirmed.
 	LogicalContainerReasonLookupFailed ConditionReason = "LookupFailed"
@@ -311,7 +311,7 @@ type LogicalContainerStatus struct {
 	// StartupLogs identifies output from the physical image dependency.
 	StartupLogs *LogSource `json:"startupLogs,omitempty"`
 
-	// RuntimeLogs identifies output from the backing physical container.
+	// RuntimeLogs identifies output from the physical container.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 
 	// Phase summarizes the container lifecycle.
@@ -319,7 +319,7 @@ type LogicalContainerStatus struct {
 	// +optional
 	Phase LogicalContainerPhase `json:"phase,omitempty"`
 
-	// PhysicalContainerRef identifies the backing PhysicalContainer using <name> or <namespace>/<name>.
+	// PhysicalContainerRef identifies the PhysicalContainer using <name> or <namespace>/<name>.
 	// Cross-namespace references are not supported.
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
 
@@ -388,9 +388,23 @@ func (c *LogicalContainer) GetResourceId() string {
 	return fmt.Sprintf("logicalcontainer-%s", c.UID)
 }
 
-// GetLogSource describes the runtime capture observed for the backing physical container.
+// GetLogSource describes the runtime capture observed for the physical container.
 func (c *LogicalContainer) GetLogSource() *LogSource {
 	return c.Status.RuntimeLogs
+}
+
+// GetLogStreams treats startup as complete when no inline image acquisition is owned or the container has started or finished.
+func (c *LogicalContainer) GetLogStreams() LogStreams {
+	streams := LogStreams{
+		OutputSupported: true, StartupSupported: true,
+		Runtime: c.Status.RuntimeLogs, Startup: c.Status.StartupLogs,
+		Complete: c.Status.Phase == LogicalContainerPhaseExited || c.Status.Phase == LogicalContainerPhaseFailed,
+	}
+	if streams.Startup == nil && (c.Spec.Container == nil || c.Spec.Container.Image == nil ||
+		!c.Status.StartedAt.IsZero() || streams.Complete) {
+		streams.Startup = &LogSource{Complete: true}
+	}
+	return streams
 }
 
 func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
@@ -557,6 +571,7 @@ func init() {
 }
 
 var _ apiserver_resource.Object = (*LogicalContainer)(nil)
+var _ LogStreamingResource = (*LogicalContainer)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainer)(nil)
 var _ apiserver_resource.GenericSubResource = (*LogicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainer)(nil)

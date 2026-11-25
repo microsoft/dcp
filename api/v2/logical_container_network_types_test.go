@@ -264,7 +264,7 @@ func TestLogicalContainerNetworkRegistration(t *testing.T) {
 }
 
 // Verifies that LogicalContainerNetwork JSON separates lifecycle policy from creation configuration
-// and exposes observed network identity and its backing physical reference.
+// and exposes observed network identity and its physical reference.
 func TestLogicalContainerNetworkJSONShape(t *testing.T) {
 	network := &LogicalContainerNetwork{
 		TypeMeta:   metav1.TypeMeta{Kind: "LogicalContainerNetwork", APIVersion: GroupVersion.String()},

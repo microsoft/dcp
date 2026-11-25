@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -112,6 +113,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 
 	if options.AttachTerminal {
 		args = append(args, "--interactive", "--tty")
+	} else if options.OpenStdin {
+		args = append(args, "--interactive")
 	}
 
 	args = append(args, options.RunArgs...)
@@ -633,6 +636,46 @@ func runSequentially(
 	)
 }
 
+// StartAttachedContainer starts a created container with `container start --attach`. WSLC relays standard input
+// according to the container's creation flags, so containers needing input must be created with OpenStdin.
+func (wco *WslcCliOrchestrator) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+	if options.Container == "" {
+		return nil, fmt.Errorf("must specify a container")
+	}
+
+	cmd := makeWslcCommand("container", "start", "--attach", options.Container)
+	cmd.Stdin = options.StdInStream
+	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
+	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
+	cmd.WaitDelay = 2 * time.Second
+	exitCodes := make(chan int32, 1)
+	exitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, exitErr error) {
+		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
+			wco.log.Error(exitErr, "WSLC attached container start command failed", "Container", options.Container)
+		}
+		exitCodes <- exitCode
+		close(exitCodes)
+	})
+	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
+	_, startWaitForExit, startErr := wco.executor.StartProcess(
+		ctx,
+		cmd,
+		exitHandler,
+		process.CreationFlagEnsureKillOnDispose,
+		nil,
+	)
+	if startErr != nil {
+		close(exitCodes)
+		return nil, fmt.Errorf("starting WSLC attached container start: %w", startErr)
+	}
+	startWaitForExit()
+
+	return exitCodes, nil
+}
+
 func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
@@ -645,6 +688,9 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	}
 
 	args := []string{"container", "exec"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
 	if options.WorkingDirectory != "" {
 		args = append(args, "--workdir", options.WorkingDirectory)
 	}
@@ -664,6 +710,7 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	args = append(args, options.Args...)
 
 	cmd := makeWslcCommand(args...)
+	cmd.Stdin = options.StdInStream
 	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
 	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
 	cmd.WaitDelay = 2 * time.Second
@@ -727,22 +774,29 @@ func (wco *WslcCliOrchestrator) CreateFiles(ctx context.Context, options contain
 	if archive == nil {
 		return nil
 	}
+	return wco.CopyFiles(ctx, containers.CopyFilesOptions{Container: options.Container, Destination: "/", Archive: archive})
+}
+
+func (wco *WslcCliOrchestrator) CopyFiles(ctx context.Context, options containers.CopyFilesOptions) error {
+	if options.Container == "" || !path.IsAbs(options.Destination) || options.Archive == nil {
+		return fmt.Errorf("container, absolute destination, and archive are required")
+	}
 
 	cmd := makeWslcCommand(
 		"container",
 		"cp",
 		"-a=false",
 		"-",
-		options.Container+":/",
+		options.Container+":"+options.Destination,
 	)
-	cmd.Stdin = archive
+	cmd.Stdin = options.Archive
 	_, errBuf, runErr := wco.runBufferedWslcCommand(
 		ctx,
 		"CreateFiles",
 		cmd,
 		nil,
 		nil,
-		ordinaryCommandTimeout,
+		containers.CopyFilesTimeout,
 	)
 	if runErr != nil {
 		return errors.Join(runErr, normalizeCliErrors(errBuf, containerNotFoundMatch))
