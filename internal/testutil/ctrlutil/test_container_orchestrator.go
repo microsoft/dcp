@@ -1284,6 +1284,8 @@ func (to *TestContainerOrchestrator) FailNextCreateContainer(name string, create
 	to.queueOperationError(operationCreateContainer, name, createErr)
 }
 
+// ScheduleContainerCreationWithPostCreateFailure makes the next creation return the created container ID with an injected error.
+// A nil error selects a default simulated failure.
 func (to *TestContainerOrchestrator) ScheduleContainerCreationWithPostCreateFailure(name string, createErr error) {
 	if createErr == nil {
 		createErr = errors.New("simulated post-create container failure")
