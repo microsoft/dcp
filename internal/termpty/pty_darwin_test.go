@@ -10,8 +10,10 @@ package termpty
 import (
 	"context"
 	"os"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -76,11 +78,11 @@ func TestOpenPTYMaster_BoundsPersistentAllocationRace(t *testing.T) {
 	require.NoError(t, ctx.Err(), "retry budget should expire before the caller's lifetime")
 }
 
-// Verifies that openPTYMaster stops redriving on cancellation and never opens for an already cancelled caller.
+// Verifies that openPTYMaster stops redriving when cancelled during an open and never opens for an already cancelled caller.
 func TestOpenPTYMaster_RespectsCancellation(t *testing.T) {
 	t.Parallel()
 	for _, cancelBeforeOpen := range []bool{false, true} {
-		t.Run(map[bool]string{false: "during redrive", true: "before open"}[cancelBeforeOpen], func(t *testing.T) {
+		t.Run(map[bool]string{false: "during open", true: "before open"}[cancelBeforeOpen], func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, internalTestTimeout)
 			defer cancel()
 			if cancelBeforeOpen {
@@ -103,3 +105,44 @@ func TestOpenPTYMaster_RespectsCancellation(t *testing.T) {
 		})
 	}
 }
+
+// Verifies that redrivePTYMasterOpen stops waiting when cancelled during a pending retry delay,
+// reports both the cancellation and the failed open, and makes no further open attempts.
+func TestRedrivePTYMasterOpen_CancellationDuringRetryDelay(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, internalTestTimeout)
+	defer cancel()
+
+	policy := &delayScheduledBackOff{scheduled: make(chan struct{})}
+	go func() {
+		select {
+		case <-policy.scheduled:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	expectedErr := &os.PathError{Op: "open", Path: "/dev/ptmx", Err: darwinRedriveOpen}
+	attempts := 0
+	file, openErr := redrivePTYMasterOpen(ctx, policy, func() (*os.File, error) {
+		attempts++
+		return nil, expectedErr
+	})
+	require.Nil(t, file)
+	require.ErrorIs(t, openErr, context.Canceled)
+	require.ErrorIs(t, openErr, expectedErr)
+	require.Equal(t, 1, attempts)
+}
+
+// delayScheduledBackOff signals when a retry delay is scheduled and keeps that delay pending until cancellation.
+type delayScheduledBackOff struct {
+	scheduled chan struct{}
+	once      sync.Once
+}
+
+func (b *delayScheduledBackOff) NextBackOff() time.Duration {
+	b.once.Do(func() { close(b.scheduled) })
+	return time.Hour
+}
+
+func (b *delayScheduledBackOff) Reset() {}
