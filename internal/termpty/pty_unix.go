@@ -240,7 +240,14 @@ func openPTYMaster(ctx context.Context, openMaster func() (*os.File, error)) (*o
 	// opens select the same minor number. Retry the open, not the later ioctls.
 	// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty_ptmx.c
 	const darwinRedriveOpen = ^syscall.Errno(5)
-	policy := backoff.WithMaxRetries(backoff.NewConstantBackOff(time.Millisecond), 9)
+	// Jittered exponential delays desynchronize callers that keep colliding on the same minor number.
+	policy := backoff.WithMaxRetries(backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(time.Millisecond),
+		backoff.WithMultiplier(2),
+		backoff.WithRandomizationFactor(0.5),
+		backoff.WithMaxInterval(16*time.Millisecond),
+		backoff.WithMaxElapsedTime(0),
+	), 9)
 	return resiliency.RetryGet(ctx, policy, func() (*os.File, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, resiliency.Permanent(ctxErr)
