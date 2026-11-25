@@ -203,3 +203,65 @@ func (e *exitErrorExecutor) StartProcess(
 }
 
 var _ process.Executor = (*exitErrorExecutor)(nil)
+
+// Verifies that CommandService forwards command stdout and stderr to the configured destinations,
+// and keeps forwarding after Run returns for a service that outlives its context, until the command exits.
+func Test_CommandService_ForwardsOutputUntilCommandExits(t *testing.T) {
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, hostingTestTimeout)
+	defer cancelExecCtx()
+
+	executor := internal_testutil.NewTestProcessExecutor(execCtx)
+	defer executor.Dispose()
+
+	svcCtx, cancelSvcCtx := context.WithCancel(execCtx)
+	defer cancelSvcCtx()
+
+	svc := newTestCommandService(t, executor, CommandServiceRunOptionShowStdout|CommandServiceRunOptionShowStderr|CommandServiceRunOptionDontTerminate)
+	stdoutWrites := make(chan string, 10)
+	stderrWrites := make(chan string, 10)
+	svc.stdout = channelWriter(stdoutWrites)
+	svc.stderr = channelWriter(stderrWrites)
+
+	runResult := runCommandServiceAsync(svc, svcCtx)
+	waitForTestProcessStart(t, execCtx, executor)
+	pe, found := executor.FindByPid(firstTestProcessPID)
+	require.True(t, found)
+
+	_, stdoutWriteErr := pe.Cmd.Stdout.Write([]byte("out before cancel\r\n"))
+	require.NoError(t, stdoutWriteErr)
+	_, stderrWriteErr := pe.Cmd.Stderr.Write([]byte("err before cancel\n"))
+	require.NoError(t, stderrWriteErr)
+	requireForwarded(t, execCtx, stdoutWrites, "out before cancel\r\n")
+	requireForwarded(t, execCtx, stderrWrites, "err before cancel\n")
+
+	cancelSvcCtx()
+	require.NoError(t, <-runResult)
+
+	_, stdoutWriteErr = pe.Cmd.Stdout.Write([]byte("out after cancel\n"))
+	require.NoError(t, stdoutWriteErr, "command output must stay writable while the command runs")
+	_, stderrWriteErr = pe.Cmd.Stderr.Write([]byte("err after cancel"))
+	require.NoError(t, stderrWriteErr, "command output must stay writable while the command runs")
+
+	executor.SimulateProcessExit(t, firstTestProcessPID, 0)
+	requireForwarded(t, execCtx, stdoutWrites, "out after cancel\n")
+	requireForwarded(t, execCtx, stderrWrites, "err after cancel\n")
+}
+
+// channelWriter reports every write as a separate string.
+type channelWriter chan<- string
+
+func (w channelWriter) Write(p []byte) (int, error) {
+	w <- string(p)
+	return len(p), nil
+}
+
+func requireForwarded(t *testing.T, ctx context.Context, writes <-chan string, expected string) {
+	t.Helper()
+
+	select {
+	case actual := <-writes:
+		require.Equal(t, expected, actual)
+	case <-ctx.Done():
+		require.FailNow(t, "timed out waiting for forwarded output", "Expected: %q", expected)
+	}
+}

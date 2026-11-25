@@ -7,6 +7,6 @@
 
 package commands
 
-// enableForkProcessSIGPIPEErrorsForProcessLifetime is a no-op on Windows.
-func enableForkProcessSIGPIPEErrorsForProcessLifetime() {
+// handleSigpipeSignalsForProcessLifetime is a no-op on Windows, which does not use SIGPIPE for broken pipes.
+func handleSigpipeSignalsForProcessLifetime() {
 }

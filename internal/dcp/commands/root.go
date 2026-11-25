@@ -29,7 +29,7 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	It integrates your code, emulators and containers to give you a development environment
 	with minimum remote dependencies and maximum ease of use.`,
 		SilenceUsage:     true,
-		PersistentPreRun: cmds.LogVersion(log.Logger, "Starting DCP..."),
+		PersistentPreRun: cmds.PrepareCommandExecution(log.Logger, "Starting DCP..."),
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true

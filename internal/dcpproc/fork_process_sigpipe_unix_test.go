@@ -275,7 +275,7 @@ func TestForkProcessCleanupPreservesExitCodeWithClosedLoggingPipe(t *testing.T) 
 	_ = parseForkedPid(t, stdout.String())
 }
 
-// Verifies that process-lifetime SIGPIPE protection preserves natural successful child exits
+// Verifies that process-lifetime SIGPIPE handling preserves natural successful child exits
 // when debug monitor logging races with a closed stderr pipe.
 func TestForkProcessCleanupPreservesSuccessfulExitWithClosedLoggingPipe(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 0)
@@ -314,9 +314,9 @@ func TestForkProcessCleanupPreservesSuccessfulExitWithClosedLoggingPipe(t *testi
 	}
 }
 
-// Verifies that cleanup-disabled fork-process retains standard Unix command-line SIGPIPE
-// behavior rather than changing the existing default mode process-wide.
-func TestForkProcessDefaultModeRetainsSIGPIPEBehavior(t *testing.T) {
+// Verifies that fork-process without a monitor reports a closed PID-output pipe as an ordinary
+// handles SIGPIPE instead of being terminated by it.
+func TestForkProcessDefaultModeHandlesClosedPidPipe(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 0)
 	defer testCancel()
 	dcpPath, dcpPathErr := getDcpProcExecutablePath()
@@ -329,16 +329,40 @@ func TestForkProcessDefaultModeRetainsSIGPIPEBehavior(t *testing.T) {
 	command := exec.CommandContext(testCtx, dcpPath, "fork-process", "--", delayPath, "--delay=10ms")
 	process.ForkFromParent(command)
 	command.Stdout = writePipe
-	command.Stderr = &bytes.Buffer{}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
 	require.NoError(t, command.Start())
 	require.NoError(t, writePipe.Close())
 	runErr := command.Wait()
 	var exitErr *exec.ExitError
-	require.ErrorAs(t, runErr, &exitErr)
+	require.ErrorAs(t, runErr, &exitErr, stderr.String())
 	waitStatus, hasWaitStatus := exitErr.Sys().(syscall.WaitStatus)
 	require.True(t, hasWaitStatus)
-	require.True(t, waitStatus.Signaled())
-	require.Equal(t, syscall.SIGPIPE, waitStatus.Signal())
+	require.False(t, waitStatus.Signaled(), stderr.String())
+	require.Equal(t, 1, exitErr.ExitCode(), stderr.String())
+}
+
+// Verifies that fork-process handles SIGPIPE before it writes its first (startup) log line,
+// so a stderr pipe that is already closed when the command starts does not terminate it.
+func TestForkProcessHandlesClosedLoggingPipeAtStartup(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 0)
+	defer testCancel()
+	dcpPath, dcpPathErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpPathErr)
+	delayPath, delayPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	stderrRead, stderrWrite, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	require.NoError(t, stderrRead.Close())
+	command := exec.CommandContext(testCtx, dcpPath, "-v=debug", "fork-process", "--", delayPath, "--delay=10ms")
+	process.ForkFromParent(command)
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = stderrWrite
+	require.NoError(t, command.Start())
+	require.NoError(t, stderrWrite.Close())
+	require.NoError(t, command.Wait())
+	_ = parseForkedPid(t, stdout.String())
 }
 
 func fillForkProcessPipe(t *testing.T, pipe *os.File) {

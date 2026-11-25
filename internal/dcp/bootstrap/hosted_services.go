@@ -32,8 +32,6 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	cmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(cmd) // Ensure the session ID is passed to the command
 	cmd.Dir = appRootDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
 	// Do not share the process group with dcp CLI process.
 	// This allows us, upon reception of Ctrl-C, to delay the shutdown
@@ -41,7 +39,7 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	// before terminating the API server.
 	process.ForkFromParent(cmd)
 
-	hostingOpts := hosting.CommandServiceRunOptionShowStderr
+	hostingOpts := hosting.CommandServiceRunOptionShowStdout | hosting.CommandServiceRunOptionShowStderr
 	if isProcessMonitor {
 		hostingOpts |= hosting.CommandServiceRunOptionDontTerminate
 	}

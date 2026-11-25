@@ -36,6 +36,7 @@ func NewForkProcessCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	cmds.AddMonitorFlags(forkProcessCmd)
+	cmds.HandleSigpipeSignals(forkProcessCmd)
 	forkProcessCmd.Flags().BoolVar(&options.enableChildCleanup, "enable-child-cleanup", false, "Stops only the launched process when the monitored owner exits, fork-process receives a shutdown signal, or PID output fails. Descendants are not enumerated or stopped. Requires --monitor.")
 
 	return forkProcessCmd, nil
@@ -76,12 +77,6 @@ func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.C
 
 		if !cmd.Flags().Changed("monitor") {
 			return startUnmonitoredForkedProcess(cmd, childCmd, forkLog)
-		}
-
-		if options.enableChildCleanup {
-			// Owner monitoring writes diagnostics, so a closed stdout or stderr pipe must already produce
-			// write errors, instead of terminating fork-process before the child can be stopped.
-			enableForkProcessSIGPIPEErrorsForProcessLifetime()
 		}
 
 		ownerCtx, ownerCtxCancel, monitorErr := cmds.MonitorPidFromFlags(cmd.Context(), forkLog)

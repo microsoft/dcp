@@ -75,6 +75,20 @@ func probeForDcpDir() (string, error) {
 	// - The extension directory (subfolder of the root directory), or
 	// - The bin directory (subfolder of the extensions directory).
 
+	if enableTestPathProbing.Load() {
+		if outputBin, found := os.LookupEnv("OUTPUT_BIN"); found {
+			dcpPath := filepath.Join(outputBin, dcpExeName)
+			info, statErr := os.Stat(dcpPath)
+			if statErr != nil {
+				return "", fmt.Errorf("failed to find the DCP executable: %w", statErr)
+			}
+			if info.IsDir() {
+				return "", fmt.Errorf("the expected path to DCP executable is a directory: %s", dcpPath)
+			}
+			return outputBin, nil
+		}
+	}
+
 	exePath, err := osutil.ThisExecutablePath()
 	if err == nil {
 		exeDir, exeName := filepath.Split(exePath)

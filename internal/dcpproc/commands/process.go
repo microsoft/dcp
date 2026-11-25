@@ -52,6 +52,8 @@ DCP terminates unexpectedly.`,
 
 	processCmd.Flags().Var(flags.NewTimeFlag(&childProcessStartTime, osutil.RFC3339MiliTimestampFormat), "child-identity-time", "Specifies the identity time of the child process. If omitted, identity is resolved once at command startup. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 
+	cmds.HandleSigpipeSignals(processCmd)
+
 	return processCmd, nil
 }
 

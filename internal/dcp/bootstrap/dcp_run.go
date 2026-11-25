@@ -277,8 +277,6 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 	cmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(cmd) // Ensure the session ID is passed to the command
 	cmd.Dir = appRootDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
 	// Do not share the process group with dcp CLI process.
 	// This allows us, upon reception of Ctrl-C, to delay the shutdown
@@ -286,6 +284,6 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 	// before terminating the API server.
 	process.ForkFromParent(cmd)
 
-	hostingOpts := hosting.CommandServiceRunOptionShowStderr | hosting.CommandServiceRunOptionDontTerminate
+	hostingOpts := hosting.CommandServiceRunOptionShowStdout | hosting.CommandServiceRunOptionShowStderr | hosting.CommandServiceRunOptionDontTerminate
 	return hosting.NewCommandService("DCP controller host", cmd, process.NewOSExecutor(log), hostingOpts, log), nil
 }

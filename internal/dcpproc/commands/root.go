@@ -31,7 +31,7 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 
 	dcpproc is a monitor tool responsible for cleaning up orphaned resources when DCP exits.`,
 		SilenceUsage:     true,
-		PersistentPreRun: cmds.LogVersion(log.Logger, "Starting DCPPROC..."),
+		PersistentPreRun: cmds.PrepareCommandExecution(log.Logger, "Starting DCPPROC..."),
 		Hidden:           true,
 	}
 

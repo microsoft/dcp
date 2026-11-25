@@ -154,6 +154,7 @@ See "run-controllers" command for information on how to associate resources with
 		Args: cobra.ExactArgs(1),
 	}
 	cleanupCmd.Flags().Bool(cleanupVolumesFlagName, false, "Remove DCP-created persistent volumes associated with the workload ID.")
+	cmds.HandleSigpipeSignals(cleanupCmd)
 
 	return cleanupCmd
 }
