@@ -1834,6 +1834,11 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 		data.failureMessage = fmt.Sprintf("Runtime container returned unrecognized status %q.", inspectedContainer.Status)
 	}
 
+	if data.state != physicalContainerStateRunning && data.state != physicalContainerStatePaused {
+		data.portMappingFailureMessage = ""
+		return change | setPhysicalContainerPortMappings(container, nil)
+	}
+
 	portMappings, portMappingErr := physicalContainerPortMappingsFromInspected(inspectedContainer.Ports)
 	if portMappingErr != nil {
 		log.Error(portMappingErr, "Failed to resolve physical container port mappings", "ContainerID", inspectedContainer.Id)

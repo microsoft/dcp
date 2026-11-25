@@ -938,6 +938,57 @@ func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
 	require.Equal(t, int32(19102), fifthMapping.HostPort)
 }
 
+// Verifies that the PhysicalContainer controller ignores unassigned port bindings before start,
+// resolves and validates them while running or paused, and clears them after exit.
+func TestV2PhysicalContainerControllerResolvesPortMappingsAfterStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-deferred-ports")
+	containerID, createErr := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:  "v2-pctr-deferred-ports",
+		Image: "existing-image",
+	})
+	require.NoError(t, createErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	require.NoError(t, containerOrchestrator.SimulateContainerPortMappings(ctx, containerID, containers.InspectedContainerPortMapping{
+		"4711/tcp": {{HostIp: "127.0.0.1", HostPort: "0"}},
+	}))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "deferred-ports", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerSpec{ContainerID: containerID},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	prepared := waitPhysicalContainerReadyReason(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerReasonRuntimeContainerCreated)
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, prepared.Status.Phase)
+	require.Empty(t, prepared.Status.PortMappings)
+
+	_, startErr := containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, startErr)
+	invalid := waitPhysicalContainerReadyReason(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerReasonPortMappingResolutionFailed)
+	require.Equal(t, apiv2.PhysicalContainerPhaseRunning, invalid.Status.Phase)
+	require.Contains(t, apimeta.FindStatusCondition(invalid.Status.Conditions, string(apiv2.ConditionReady)).Message, `host port "0"`)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerPortMappings(ctx, containerID, containers.InspectedContainerPortMapping{
+		"4711/tcp": {{HostIp: "127.0.0.1", HostPort: "51111"}},
+	}))
+	running := waitPhysicalContainerReadyReason(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+	expected := []apiv2.PhysicalContainerPortMapping{{
+		ContainerPort: 4711, Protocol: commonapi.PortProtocolTCP, HostIP: "127.0.0.1", HostPort: 51111,
+	}}
+	require.Equal(t, expected, running.Status.PortMappings)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, containerID, containers.ContainerStatusPaused))
+	paused := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePaused)
+	require.Equal(t, expected, paused.Status.PortMappings)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerExit(ctx, containerID, 0))
+	exited := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	require.Empty(t, exited.Status.PortMappings)
+}
+
 func TestV2PhysicalContainerControllerPreservesRuntimePhaseOnPortMappingFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
