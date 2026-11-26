@@ -10,6 +10,7 @@
 package termpty
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,12 +27,46 @@ import (
 
 const internalTestTimeout = 20 * time.Second
 
+// Verifies that pty_open successfully allocates and closes PTY pairs concurrently.
+func TestUnixPTY_ConcurrentAllocation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, internalTestTimeout)
+	defer cancel()
+
+	const workers = 8
+	failures := make(chan error, workers)
+	var pending sync.WaitGroup
+	for range workers {
+		pending.Go(func() {
+			for range 128 {
+				master, slave, openErr := pty_open(ctx)
+				if openErr != nil {
+					failures <- openErr
+					return
+				}
+				closeErr := errors.Join(slave.Close(), master.Close())
+				if closeErr != nil {
+					failures <- closeErr
+					return
+				}
+			}
+		})
+	}
+	pending.Wait()
+	close(failures)
+	for failure := range failures {
+		require.NoError(t, failure)
+	}
+}
+
 // newOpenedUnixPTY allocates a fresh unixPTY and registers a t.Cleanup that
 // closes it. The slave side stays open in the test process (no child is
 // spawned) so tests can drive the slave end directly.
 func newOpenedUnixPTY(t *testing.T) *unixPTY {
 	t.Helper()
-	master, slave, err := pty_open()
+	ctx, cancel := testutil.GetTestContext(t, internalTestTimeout)
+	t.Cleanup(cancel)
+	master, slave, err := pty_open(ctx)
 	require.NoError(t, err, "pty_open failed")
 	p := &unixPTY{
 		master: master,

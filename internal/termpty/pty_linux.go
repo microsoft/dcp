@@ -8,6 +8,8 @@
 package termpty
 
 import (
+	"context"
+	"os"
 	"strconv"
 
 	"golang.org/x/sys/unix"
@@ -29,4 +31,8 @@ func ptsname(f *ptyMaster) (string, error) {
 		return "", err
 	}
 	return "/dev/pts/" + strconv.Itoa(n), nil
+}
+
+func openPTYMaster(_ context.Context, openMaster func() (*os.File, error)) (*os.File, error) {
+	return openMaster()
 }

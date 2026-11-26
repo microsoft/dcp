@@ -130,7 +130,7 @@ var _ = PTY((*unixPTY)(nil))
 func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *CommandSpec) (*PseudoTerminalProcess, error) {
 	cols, rows := NormalizeTerminalDimensions(spec.Cols, spec.Rows)
 
-	master, slave, err := pty_open()
+	master, slave, err := pty_open(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to allocate PTY: %w", err)
 	}
@@ -193,10 +193,14 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 	return &ptp, nil
 }
 
+func openPTYMasterDevice() (*os.File, error) {
+	return os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+}
+
 // Allocates a pseudoterminal and returns the master and slave file descriptors.
-func pty_open() (master *ptyMaster, slave *ptySlave, err error) {
+func pty_open(ctx context.Context) (master *ptyMaster, slave *ptySlave, err error) {
 	var masterFile *os.File
-	masterFile, err = os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	masterFile, err = openPTYMaster(ctx, openPTYMasterDevice)
 	if err != nil {
 		return nil, nil, fmt.Errorf("openpt: %w", err)
 	}
